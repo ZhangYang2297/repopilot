@@ -6,6 +6,25 @@ from pathlib import Path
 
 from repopilot.config import get_settings, reset_settings_for_tests, Settings
 
+# Recommended models (tested on Volcengine ARK). Users can set any LiteLLM-compatible model.
+RECOMMENDED_MODELS = {
+    "fast": [
+        ("doubao-seed-1-6-flash-250828", "Fastest/cheapest - plan/reflect"),
+    ],
+    "default": [
+        ("doubao-seed-evolving", "RECOMMENDED - 5M tokens, best for code"),
+        ("doubao-seed-2-1-turbo-260628", "2M tokens, balanced"),
+        ("doubao-seed-2-0-mini-260428", "200K tokens, fast"),
+        ("doubao-seed-2-0-code-preview-260215", "Code-specialized"),
+        ("glm-4-7-251222", "Zhipu GLM-4.7"),
+    ],
+    "strong": [
+        ("doubao-seed-2-1-pro-260628", "Best quality"),
+        ("deepseek-v3-2-251201", "DeepSeek V3.2"),
+        ("glm-5-2-260617", "Zhipu GLM-5"),
+    ],
+}
+
 app = typer.Typer(
     name="repopilot",
     help="RepoPilot - Local-first code agent.",
@@ -67,6 +86,45 @@ def _ensure_configured() -> None:
 def _main(ctx: typer.Context):
     if ctx.invoked_subcommand is None:
         _ensure_configured()
+
+
+@app.command("models")
+def list_models() -> None:
+    """List recommended models for Volcengine ARK."""
+    from rich.table import Table
+    console.print("[bold]RepoPilot recommended models (Volcengine ARK)[/bold]\n")
+    for tier, items in RECOMMENDED_MODELS.items():
+        t = Table(title=f"{tier.upper()} tier", show_header=True, header_style="bold cyan")
+        t.add_column("Model")
+        t.add_column("Description")
+        for name, desc in items:
+            t.add_row(name, desc)
+        console.print(t)
+    console.print("\n[dim]Switch model with:  repopilot model <name>[/dim]")
+    console.print("[dim]Or edit directly:   repopilot config set model openai/<model-name>[/dim]")
+    console.print("[dim]Current model:[/dim]", get_settings().model)
+
+
+@app.command("model")
+def set_model(
+    name: str = typer.Argument(..., help="Model name (without openai/ prefix)"),
+    tier: str = typer.Option("default", "--tier", "-t", help="fast|default|strong"),
+) -> None:
+    """Set the model for a tier (fast/default/strong)."""
+    if tier not in ("fast", "default", "strong"):
+        console.print("[red]Tier must be fast, default, or strong[/red]")
+        raise typer.Exit(1)
+    s = get_settings()
+    full_name = name if "/" in name else f"openai/{name}"
+    # Validate format
+    if "/" not in full_name:
+        console.print("[red]Model must be in provider/model format, e.g. openai/doubao-seed-evolving[/red]")
+        raise typer.Exit(1)
+    key = f"{tier}_model" if tier != "default" else "model"
+    s_c = Settings.load(**{key: full_name})
+    s_c.save()
+    reset_settings_for_tests()
+    console.print(f"[green]Set {tier} model = {full_name}[/green]")
 
 
 @app.command()
