@@ -199,3 +199,4 @@ def build_llm_from_settings(settings) -> LLMService:
         api_key=os.environ.get("OPENAI_API_KEY") or os.environ.get("DASHSCOPE_API_KEY"),
         base_url=os.environ.get("OPENAI_API_BASE"),
     )
+
