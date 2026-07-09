@@ -112,7 +112,7 @@ class LLMService:
         if self.api_key:
             kwargs["api_key"] = self.api_key
         if self.base_url:
-            kwargs["base_url"] = self.base_url
+            kwargs["api_base"] = self.base_url
 
         last_exc: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
@@ -190,13 +190,26 @@ class LLMService:
 
 
 def build_llm_from_settings(settings) -> LLMService:
-    """Create an LLMService from Settings, picking up env keys automatically."""
-    import os
+    """Create an LLMService from Settings.
+
+    API key resolution: settings.api_key (config.toml) wins; fall back to env
+    OPENAI_API_KEY / DASHSCOPE_API_KEY / ARK_API_KEY only if no key configured.
+    """
+    import os as _os
+    api_key = settings.api_key or None
+    base_url = settings.base_url or None
+    if not api_key:
+        for ek in ("OPENAI_API_KEY", "DASHSCOPE_API_KEY", "ARK_API_KEY", "ANTHROPIC_API_KEY"):
+            v = _os.environ.get(ek)
+            if v:
+                api_key = v
+                break
     return LLMService(
         model=settings.model,
         fast_model=settings.fast_model,
         strong_model=settings.strong_model,
-        api_key=os.environ.get("OPENAI_API_KEY") or os.environ.get("DASHSCOPE_API_KEY"),
-        base_url=os.environ.get("OPENAI_API_BASE"),
+        api_key=api_key,
+        base_url=base_url,
+        max_retries=1,
     )
 
