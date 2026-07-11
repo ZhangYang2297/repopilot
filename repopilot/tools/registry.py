@@ -3,7 +3,7 @@ through the permission engine."""
 from __future__ import annotations
 from typing import Any, TYPE_CHECKING
 
-from repopilot.tools.base import Tool, TIER_READONLY
+from repopilot.tools.base import Tool, TIER_READONLY, AgentFinished
 from repopilot.tools.result import ToolResult
 
 if TYPE_CHECKING:
@@ -92,9 +92,12 @@ class ToolRegistry:
                 )
             # action == "allow" → proceed
 
-        # Actual execution (errors from tool are caught here to avoid crashing the loop)
+        # Actual execution
         try:
             result = tool.execute(args or {}, sandbox, extra=extra)
+        except AgentFinished:
+            raise  # AgentFinished is a control-flow signal, not an error
         except Exception as exc:
             result = ToolResult(error=f"{type(exc).__name__}: {exc}")
         return result
+

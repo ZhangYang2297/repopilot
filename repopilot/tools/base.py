@@ -1,4 +1,3 @@
-"""Tool base class — every agent tool inherits from this."""
 from __future__ import annotations
 import abc
 from dataclasses import dataclass, field
@@ -8,7 +7,17 @@ from repopilot.tools.result import ToolResult
 
 if TYPE_CHECKING:
     from repopilot.sandbox.base import Sandbox
-    from repopilot.permission.engine import PermissionEngine
+
+
+class AgentFinished(Exception):
+    """Raised by FinishTool to signal the agent loop that the task is complete.
+
+    The loop catches this exception, reports the summary, and exits cleanly.
+    """
+    def __init__(self, summary: str, tests_passed: bool = True):
+        self.summary = summary
+        self.tests_passed = tests_passed
+        super().__init__(summary)
 
 
 # Tool tiers: controls permission / auto-approval behaviour
