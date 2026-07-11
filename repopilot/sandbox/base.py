@@ -143,3 +143,4 @@ class Sandbox(abc.ABC):
         lines = text.splitlines()
         width = max(3, len(str(len(lines) + start_line)))
         return "\n".join(f"{i:{width}}|{line}" for i, line in enumerate(lines, start_line))
+

@@ -12,9 +12,9 @@ if TYPE_CHECKING:
 class GrepTool(Tool):
     name = "grep"
     description = (
-        "Search for a regex pattern in all files in the repository. "
-        "Returns matching lines with file paths and line numbers. "
-        "Use this to find function definitions, variable references, imports, etc."
+        "Search for a regex pattern in files. Returns matching lines with file "
+        "paths and line numbers. Use this to find function definitions, variable "
+        "references, imports, error messages, etc."
     )
     parameters = {
         "type": "object",
@@ -22,6 +22,11 @@ class GrepTool(Tool):
             "pattern": {
                 "type": "string",
                 "description": "Regular expression pattern to search for.",
+            },
+            "path": {
+                "type": "string",
+                "description": "Directory or file path to search in (relative to repo root, default '.').",
+                "default": ".",
             },
             "glob": {
                 "type": "string",
@@ -44,6 +49,11 @@ class GrepTool(Tool):
             return ToolResult(error="grep requires 'pattern'")
         glob_filter = args.get("glob") or None
         ignore_case = bool(args.get("ignore_case", False))
+        search_path = args.get("path", ".")
+
+        # Note: current sandbox.grep searches entire repo; for subdir search,
+        # we filter results by path prefix. This works cross-platform without
+        # needing to change sandbox implementations.
         try:
             matches = sandbox.grep(pattern, glob_filter=glob_filter, ignore_case=ignore_case)
         except ValueError as e:
@@ -51,10 +61,20 @@ class GrepTool(Tool):
         except Exception as e:
             return ToolResult(error=f"{type(e).__name__}: {e}")
 
-        if not matches:
-            return ToolResult(content=f"No matches found for pattern: {pattern!r}")
+        # Filter by search_path if not "."
+        if search_path and search_path != ".":
+            norm = search_path.rstrip("/").rstrip("\\")
+            if norm:
+                matches = [m for m in matches
+                           if m.file == norm or m.file.startswith(norm + "/") or m.file.startswith(norm + "\\")]
 
-        lines = [f"Found {len(matches)} matches for {pattern!r}:\n"]
+        if not matches:
+            return ToolResult(content=f"No matches found for pattern: {pattern!r}"
+                              + (f" in {search_path}" if search_path != "." else ""))
+
+        lines = [f"Found {len(matches)} matches for {pattern!r}"
+                 + (f" in {search_path}" if search_path != "." else "")
+                 + ":\n"]
         shown = 0
         for m in matches:
             if shown >= self.MAX_RESULTS:
@@ -81,6 +101,11 @@ class GlobTool(Tool):
                 "type": "string",
                 "description": "Glob pattern. Use '**/' prefix for recursive search.",
             },
+            "path": {
+                "type": "string",
+                "description": "Directory to search in (relative to repo root, default '.').",
+                "default": ".",
+            },
         },
         "required": ["pattern"],
     }
@@ -89,16 +114,29 @@ class GlobTool(Tool):
 
     def execute(self, args: dict[str, Any], sandbox: "Sandbox", extra=None) -> ToolResult:
         pattern = args.get("pattern", "")
+        search_path = args.get("path", ".")
         if not pattern:
             return ToolResult(error="glob requires 'pattern'")
+
+        # If path is specified, prepend it to the pattern for subdirectory search
+        full_pattern = pattern
+        if search_path and search_path != ".":
+            norm = search_path.rstrip("/").rstrip("\\")
+            if not pattern.startswith(norm):
+                # e.g. path="pkg", pattern="*.py" -> "pkg/*.py"
+                full_pattern = f"{norm}/{pattern}"
+
         try:
-            files = sandbox.glob(pattern)
+            files = sandbox.glob(full_pattern)
         except Exception as e:
             return ToolResult(error=f"{type(e).__name__}: {e}")
         if not files:
-            return ToolResult(content=f"No files match pattern: {pattern!r}")
+            return ToolResult(content=f"No files match pattern: {pattern!r}"
+                              + (f" in {search_path}" if search_path != "." else ""))
         shown = files[:self.MAX_RESULTS]
-        lines = [f"Found {len(files)} files matching {pattern!r}:\n"]
+        lines = [f"Found {len(files)} files matching {pattern!r}"
+                 + (f" in {search_path}" if search_path != "." else "")
+                 + ":\n"]
         for f in shown:
             lines.append(f"  {f}")
         if len(files) > self.MAX_RESULTS:
@@ -122,16 +160,17 @@ class ListDirTool(Tool):
             },
             "max_depth": {
                 "type": "integer",
-                "description": "Maximum recursion depth (default 2).",
+                "description": "Maximum recursion depth (default 2, max 5).",
                 "default": 2,
             },
         },
     }
     tier = TIER_READONLY
+    MAX_DEPTH = 5
 
     def execute(self, args: dict[str, Any], sandbox: "Sandbox", extra=None) -> ToolResult:
         path = args.get("path", ".")
-        depth = int(args.get("max_depth", 2))
+        depth = min(int(args.get("max_depth", 2)), self.MAX_DEPTH)
         try:
             tree = sandbox.list_dir(path, max_depth=depth)
         except PermissionError as e:
@@ -158,7 +197,7 @@ class ListDirTool(Tool):
 class RepoTreeTool(Tool):
     name = "get_repo_tree"
     description = (
-        "Get a high-level overview of the repository structure. "
+        "Get a high-level overview of the repository file structure. "
         "Call this early in a task to understand the codebase layout."
     )
     parameters = {

@@ -1,22 +1,14 @@
 """Execution tools: bash and run_python."""
 from __future__ import annotations
+import os as _os
+import uuid as _uuid
 from typing import TYPE_CHECKING, Any
 
-from repopilot.tools.base import Tool, TIER_EXEC, TIER_DANGEROUS
+from repopilot.tools.base import Tool, TIER_EXEC
 from repopilot.tools.result import ToolResult, truncate_text
 
 if TYPE_CHECKING:
     from repopilot.sandbox.base import Sandbox
-
-
-def _shquote_sh(s: str) -> str:
-    """Single-quote a string for POSIX sh (used in Docker sandbox)."""
-    return "'" + s.replace("'", "'\"'\"'") + "'"
-
-
-def _shquote_cmd(s: str) -> str:
-    """Double-quote a string for Windows cmd.exe."""
-    return '"' + s.replace('"', '""') + '"'
 
 
 class BashTool(Tool):
@@ -25,7 +17,7 @@ class BashTool(Tool):
         "Execute a shell command in the repository working directory. "
         "Use this to run tests, builds, linters, git commands, or any CLI tool. "
         "Output is truncated (head 500 + tail 1500 chars). "
-        "For Python scripts use run_python; for project commands (pytest, npm, git) use bash."
+        "For Python scripts prefer run_python; for project commands (pytest, npm, git) use bash."
     )
     parameters = {
         "type": "object",
@@ -80,9 +72,9 @@ class RunPythonTool(Tool):
     name = "run_python"
     description = (
         "Execute Python code in the sandbox and return stdout/stderr. "
-        "The code runs with 'python -c' in the repo root. "
-        "Use this for quick computations, data inspection, testing Python APIs. "
-        "Do NOT use this for project commands like pytest — use bash for those."
+        "The code is written to a temporary .py file in the workspace root and "
+        "executed with 'python tmp.py'. Multiline code works correctly. "
+        "Use this for quick computations, data inspection, or testing Python APIs."
     )
     parameters = {
         "type": "object",
@@ -110,23 +102,23 @@ class RunPythonTool(Tool):
             return ToolResult(error="run_python requires 'code' argument")
         timeout = min(int(args.get("timeout", self.DEFAULT_TIMEOUT)), self.MAX_TIMEOUT)
 
-        # Use python -c with platform-appropriate quoting
-        # LocalSandbox on Windows uses cmd.exe, DockerSandbox uses sh
-        import platform
-        is_windows = platform.system() == "Windows"
-        # Heuristic: if sandbox has _container attr it's Docker (sh), else local
-        is_docker = hasattr(sandbox, "_container")
-        if is_docker or not is_windows:
-            cmd = f"python -c {_shquote_sh(code)}"
-        else:
-            cmd = f'python -c {_shquote_cmd(code)}'
-
+        tmp_name = f"_runpy_{_uuid.uuid4().hex[:8]}.py"
         try:
-            result = sandbox.exec(cmd, timeout=timeout)
+            sandbox.write_file(tmp_name, code)
+        except Exception as e:
+            return ToolResult(error=f"Failed to write temp script: {e}")
+        try:
+            result = sandbox.exec(f"python {tmp_name}", timeout=timeout)
         except PermissionError as e:
             return ToolResult(error=str(e))
         except Exception as e:
             return ToolResult(error=f"{type(e).__name__}: {e}")
+        finally:
+            try:
+                rm_cmd = "del " + tmp_name if _os.name == "nt" else "rm -f " + tmp_name
+                sandbox.exec(rm_cmd, timeout=5)
+            except Exception:
+                pass
 
         output = result.truncated(head=500, tail=2000)
         meta = {

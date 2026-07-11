@@ -209,7 +209,7 @@ class DockerSandbox(Sandbox):
             tmp_host.write_text(content, encoding="utf-8")
             tmp_host.unlink()  # host is mounted; file is visible in container
 
-    def edit_file(self, path: str, old_string: str, new_string: str) -> str:
+    def edit_file(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
         cp = self._container_path(path)
         # Read file, edit locally, write back (simpler than container-side sed escaping)
         read_r = self._docker_exec(f"cat {shquote(cp)}")
@@ -220,7 +220,8 @@ class DockerSandbox(Sandbox):
             close = difflib.get_close_matches(old_string, original.splitlines(), n=1, cutoff=0.6)
             hint = f"\nClosest match:\n{close[0]!r}" if close else ""
             raise ValueError(f"old_string not found in {path}.{hint}")
-        new_content = original.replace(old_string, new_string, 1)
+        count = -1 if replace_all else 1
+        new_content = original.replace(old_string, new_string, count)
         # Write back via mounted filesystem
         host_p = self.repo_path / path
         host_p.write_text(new_content, encoding="utf-8")
@@ -325,3 +326,5 @@ class DockerSandbox(Sandbox):
 def shquote(s: str) -> str:
     """Single-quote a string for sh -c, safely."""
     return "'" + s.replace("'", "'\"'\"'") + "'"
+
+

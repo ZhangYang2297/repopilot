@@ -55,7 +55,7 @@ class LocalSandbox(Sandbox):
         with open(p, "w", encoding="utf-8") as f:
             f.write(content)
 
-    def edit_file(self, path: str, old_string: str, new_string: str) -> str:
+    def edit_file(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
         p = self._safe_path(path)
         if not p.exists():
             raise FileNotFoundError(f"File not found: {path}")
@@ -67,7 +67,8 @@ class LocalSandbox(Sandbox):
             raise ValueError(
                 f"old_string not found in {path}.{hint}"
             )
-        new_content = original.replace(old_string, new_string, 1)
+        count = -1 if replace_all else 1
+        new_content = original.replace(old_string, new_string, count)
         p.write_text(new_content, encoding="utf-8")
         diff = difflib.unified_diff(
             original.splitlines(keepends=True),
@@ -230,3 +231,5 @@ class LocalSandbox(Sandbox):
             lines.append(line)
             total += len(line)
         return "\n".join(lines)
+
+
