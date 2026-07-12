@@ -137,7 +137,16 @@ class LLMService:
         raise last_exc  # type: ignore[misc]
 
     # Convenience methods
-    def chat_fast(self, system: str, user: str, **kw) -> str:
+    def chat_messages(self, messages: list[dict], tier: Tier = Tier.DEFAULT, **kw) -> LLMResponse:
+        """Chat with a full messages list."""
+        return self.chat(messages, tier=tier, **kw)
+
+    def chat_fast(self, *args, **kw) -> str:
+        """Fast-tier chat. Accepts either (messages: list) or (system: str, user: str)."""
+        if len(args) == 1 and isinstance(args[0], list):
+            return self.chat(args[0], tier=Tier.FAST, **kw).content
+        system = args[0] if len(args) >= 1 else kw.pop("system", "")
+        user = args[1] if len(args) >= 2 else kw.pop("user", "")
         return self.chat(
             [{"role": "system", "content": system},
              {"role": "user", "content": user}],
