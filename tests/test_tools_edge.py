@@ -140,6 +140,7 @@ class TestEditFileEdgeCases:
             assert "foo" not in content
 
     def test_replace_first_only(self, repo):
+        """Non-unique match without replace_all should error (safety check)."""
         (repo / "dup.py").write_text("foo foo foo\n", encoding="utf-8")
         with LocalSandbox(repo) as sb:
             t = EditFileTool()
@@ -149,9 +150,12 @@ class TestEditFileEdgeCases:
                 "new_string": "bar",
                 "replace_all": False,
             }, sb)
+            # Ambiguous match (3 occurrences) returns an error
+            assert bool(r) is False
+            assert "appears 3 times" in r.error
+            # File unchanged
             content = (repo / "dup.py").read_text()
-            assert content.count("bar") == 1
-            assert content.count("foo") == 2
+            assert content.count("bar") == 0
 
     def test_empty_old_string_rejected(self, repo):
         with LocalSandbox(repo) as sb:

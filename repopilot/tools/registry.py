@@ -87,8 +87,9 @@ class ToolRegistry:
                 return ToolResult(error=f"Permission denied: {decision.reason}")
             if decision.action == "ask":
                 return ToolResult(
-                    error=f"Approval required for {name}: {decision.reason}. "
-                          f"Waiting for user confirmation (not yet implemented in registry loop)."
+                    error=f"[Approval Required] Tool '{name}' needs confirmation: {decision.reason}. "
+                          f"The agent loop will prompt the user. For now, this call is blocked; "
+                          f"use --approval-mode auto to bypass or approve in the interactive prompt."
                 )
             # action == "allow" → proceed
 

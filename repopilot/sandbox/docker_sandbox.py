@@ -9,6 +9,7 @@ from typing import Optional
 
 from repopilot.sandbox.base import (
     DEFAULT_IGNORE_DIRS,
+    BINARY_EXTENSIONS,
     ExecResult,
     FileReadResult,
     GrepMatch,
@@ -29,11 +30,18 @@ def _make_tar_bytes(path_on_host: Path) -> bytes:
     return buf.getvalue()
 
 
+def shquote(s: str) -> str:
+    """Single-quote a string for sh -c, safely. Mirrors local_sandbox shquote."""
+    return "'" + s.replace("'", "'\"'\"'") + "'"
+
+
 class DockerSandbox(Sandbox):
     """Sandbox backed by a Docker container.
     - Mounts repo at /workspace (read-write)
     - Cgroups CPU/memory limits
     - network_mode configurable (bridge|none)
+    - All shell arguments are single-quote escaped to prevent injection
+    - cwd is validated to stay within /workspace (no .. escape)
     """
 
     def __init__(
@@ -61,11 +69,9 @@ class DockerSandbox(Sandbox):
 
     def setup(self) -> None:
         client = self._get_client()
-        # Ensure image exists (don't auto-pull to avoid network issues if image is local)
         try:
             client.images.get(self.image)
         except Exception:
-            # Try to pull; if fails, raise clear error
             try:
                 client.images.pull(self.image)
             except Exception as e:
@@ -92,9 +98,7 @@ class DockerSandbox(Sandbox):
                     read_only=False,
                 ),
             ],
-            # Start with basic tools; install if needed via exec
         )
-        # Wait for container to be running
         time.sleep(0.5)
         self._container.reload()
 
@@ -110,17 +114,31 @@ class DockerSandbox(Sandbox):
                 pass
             self._container = None
 
+    def _ensure_container_alive(self) -> None:
+        """Re-create container if it died (OOM, etc.)"""
+        if self._container is None:
+            raise RuntimeError("Container not started; call setup() first")
+        try:
+            self._container.reload()
+            if self._container.status != "running":
+                # Container died; restart it
+                self._container.start()
+                time.sleep(0.3)
+                self._container.reload()
+        except Exception:
+            # Container was removed; recreate
+            self._container = None
+            self.setup()
+
     # ── internal exec helper ──────────────────────
     def _docker_exec(self, cmd: str, timeout: int = 30, workdir: str = "/workspace") -> ExecResult:
-        if not self._container:
-            raise RuntimeError("Container not started; call setup() first")
+        self._ensure_container_alive()
         t0 = time.time()
         timed_out = False
         exit_code = 0
         stdout = b""
         stderr = b""
         try:
-            # sh -c for shell semantics
             exec_id = self._client.api.exec_create(
                 self._container.id,
                 ["sh", "-c", cmd],
@@ -140,10 +158,10 @@ class DockerSandbox(Sandbox):
                     err_chunks.append(err_b)
             stdout = b"".join(out_chunks)
             stderr = b"".join(err_chunks)
-            # Get exit code
-            inspect = self._client.api.exec_inspect(exec_id)
-            exit_code = inspect.get("ExitCode", -1)
-            if timed_out:
+            if not timed_out:
+                inspect = self._client.api.exec_inspect(exec_id)
+                exit_code = inspect.get("ExitCode", -1)
+            else:
                 exit_code = -1
         except Exception as e:
             stderr = str(e).encode()
@@ -158,73 +176,81 @@ class DockerSandbox(Sandbox):
         )
 
     # ── file ops ──────────────────────────────────
-    def _container_path(self, path: str) -> str:
-        # Join under /workspace (path traversal protection: sh -c quoting is in _docker_exec)
-        # Strip leading / to prevent absolute paths
-        safe = path.lstrip("/")
-        return f"/workspace/{safe}"
-
     def read_file(self, path: str, offset: int = 0, limit: int = 200) -> FileReadResult:
-        cp = self._container_path(path)
-        # Use sed to slice lines; fallback to cat+head/tail
-        if offset == 0 and limit > 0:
-            r = self._docker_exec(f"sed -n '1,{limit}p' {shquote(cp)}; echo __LINES__; wc -l < {shquote(cp)}")
+        # Read via container exec (respects container-side filesystem view)
+        container_path = self._safe_container_path(path)
+        if offset > 0 or limit < 10000:
+            # Use sed for line-range reading (more efficient than cat+truncate)
+            start_line = offset + 1
+            end_line = offset + limit
+            cmd = f"sed -n {shquote(str(start_line))},{shquote(str(end_line))}p {shquote(container_path)}"
         else:
-            start = offset + 1
-            end = offset + limit
-            r = self._docker_exec(
-                f"sed -n '{start},{end}p' {shquote(cp)}; echo __LINES__; wc -l < {shquote(cp)}"
-            )
+            cmd = f"cat {shquote(container_path)}"
+        r = self._docker_exec(cmd, timeout=10)
         if r.exit_code != 0:
-            raise FileNotFoundError(f"Cannot read {path}: {r.stderr.strip()}")
-        parts = r.stdout.split("__LINES__")
-        content = parts[0].rstrip("\n")
+            raise FileNotFoundError(f"File not found or unreadable: {path}\n{r.stderr}")
+        content = r.stdout
+        # Count total lines with wc -l
+        wc = self._docker_exec(f"wc -l < {shquote(container_path)}", timeout=5)
         try:
-            total = int(parts[1].strip()) if len(parts) > 1 else content.count("\n") + 1
+            total_lines = int(wc.stdout.strip())
         except ValueError:
-            total = content.count("\n") + 1
-        # Add line numbers
+            total_lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         numbered = self._add_line_numbers(content, start_line=offset + 1)
+        truncated = (offset + limit) < total_lines
         return FileReadResult(
             path=path,
             content=numbered,
             start_line=offset + 1,
-            total_lines=total,
-            truncated=(offset + limit) < total,
+            total_lines=total_lines,
+            truncated=truncated,
         )
 
     def write_file(self, path: str, content: str) -> None:
-        cp = self._container_path(path)
-        # Use python to write atomically (avoids shell escaping issues)
-        encoded = content.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
-        py_cmd = (
-            f"python3 -c \"import os; os.makedirs(os.path.dirname('{cp}'), exist_ok=True); "
-            f"open('{cp}','w').write('{encoded}')\""
-        )
-        r = self._docker_exec(py_cmd)
-        if r.exit_code != 0:
-            # Fallback: use cat via tar upload
-            tmp_host = Path(self.repo_path) / path
-            tmp_host.parent.mkdir(parents=True, exist_ok=True)
-            tmp_host.write_text(content, encoding="utf-8")
-            tmp_host.unlink()  # host is mounted; file is visible in container
+        """Atomic write: write to .tmp then mv into place (prevents partial writes on crash)."""
+        container_path = self._safe_container_path(path)
+        parent = str(Path(container_path).parent)
+        # Ensure parent directory exists
+        self._docker_exec(f"mkdir -p {shquote(parent)}", timeout=5)
+        # Write via host tar + put_archive for efficiency (no base64 encoding issues)
+        host_p = self.repo_path / path
+        host_p.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic: write to .tmp then rename (POSIX rename is atomic)
+        tmp_name = f".{host_p.name}.tmp.{int(time.time()*1000)}"
+        tmp_host = host_p.parent / tmp_name
+        tmp_host.write_text(content, encoding="utf-8")
+        try:
+            # Move tmp into place atomically
+            self._docker_exec(f"mv {shquote(str(Path('/workspace')/path).parent/tmp_name)} {shquote(container_path)}", timeout=5)
+        except Exception:
+            # Fallback: write directly if mv fails
+            host_p.write_text(content, encoding="utf-8")
+            tmp_host.unlink(missing_ok=True)
 
     def edit_file(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
-        cp = self._container_path(path)
-        # Read file, edit locally, write back (simpler than container-side sed escaping)
-        read_r = self._docker_exec(f"cat {shquote(cp)}")
-        if read_r.exit_code != 0:
+        """Edit file with exact-match requirement (at least 2 lines of context recommended)."""
+        # DockerSandbox: read from host (bind-mount), edit, write atomically
+        host_p = self.repo_path / path
+        # Validate path stays in repo
+        try:
+            host_p.resolve().relative_to(self.repo_path.resolve())
+        except ValueError:
+            raise PermissionError(f"Path escapes repo: {path}")
+        if not host_p.exists():
             raise FileNotFoundError(f"File not found: {path}")
-        original = read_r.stdout
+        original = host_p.read_text(encoding="utf-8", errors="replace")
         if old_string not in original:
-            close = difflib.get_close_matches(old_string, original.splitlines(), n=1, cutoff=0.6)
+            import difflib as _difflib
+            close = _difflib.get_close_matches(old_string, original.splitlines(), n=1, cutoff=0.6)
             hint = f"\nClosest match:\n{close[0]!r}" if close else ""
             raise ValueError(f"old_string not found in {path}.{hint}")
         count = -1 if replace_all else 1
         new_content = original.replace(old_string, new_string, count)
-        # Write back via mounted filesystem
-        host_p = self.repo_path / path
-        host_p.write_text(new_content, encoding="utf-8")
+        # Atomic write: tmp then rename
+        tmp_name = f".{host_p.name}.edit.{int(time.time()*1000)}"
+        tmp_host = host_p.parent / tmp_name
+        tmp_host.write_text(new_content, encoding="utf-8")
+        tmp_host.replace(host_p)  # os.replace is atomic on same filesystem
         diff = difflib.unified_diff(
             original.splitlines(keepends=True),
             new_content.splitlines(keepends=True),
@@ -232,40 +258,76 @@ class DockerSandbox(Sandbox):
         )
         return "".join(diff)
 
+    def _safe_container_path(self, path: str) -> str:
+        """Resolve a path to its container-side absolute path, preventing escape from /workspace."""
+        # Strip leading / and any .. traversal
+        clean = path.lstrip("/")
+        # Resolve .. by splitting and rebuilding
+        parts = []
+        for part in clean.replace("\\", "/").split("/"):
+            if part == "" or part == ".":
+                continue
+            if part == "..":
+                if parts:
+                    parts.pop()
+                continue
+            parts.append(part)
+        return "/workspace/" + "/".join(parts) if parts else "/workspace"
+
     # ── exec ──────────────────────────────────────
     def exec(self, command: str, timeout: int = 30, cwd: Optional[str] = None) -> ExecResult:
         workdir = "/workspace"
         if cwd:
-            workdir = f"/workspace/{cwd.lstrip('/')}"
+            workdir = self._safe_container_path(cwd)
         return self._docker_exec(command, timeout=timeout, workdir=workdir)
 
     # ── navigation ───────────────────────────────
     def glob(self, pattern: str) -> list[str]:
-        # Use find inside container to avoid host path issues
+        """Use python3 -c to do glob matching safely (no shell injection in pattern)."""
         norm = pattern.replace("\\", "/")
-        if norm.startswith("**/"):
-            pat = norm[3:]
-            cmd = f"find /workspace -type d \\( {' -o '.join('-name '+d for d in DEFAULT_IGNORE_DIRS) } \\) -prune -o -name '{pat}' -type f -print"
+        # Use Python glob inside container to avoid shell injection
+        py_script = (
+            "import glob, os, sys; "
+            "ignore = {'.git','__pycache__','node_modules','.venv','venv','dist','build','.mypy_cache','.pytest_cache','.ruff_cache','.tox','.idea','.vscode','.eggs'}; "
+            "results = []; "
+            f"pat = {norm!r}; "
+            "recursive = pat.startswith('**/'); "
+            "base_pat = pat[3:] if recursive else pat; "
+            "for root, dirs, files in os.walk('/workspace'): "
+            "  dirs[:] = [d for d in dirs if d not in ignore and not d.startswith('.') and not d.endswith('.egg-info')]; "
+            "  rel = os.path.relpath(root, '/workspace'); "
+            "  for f in files: "
+            "    import fnmatch; "
+            "    if fnmatch.fnmatch(f, base_pat if not recursive else base_pat if '/' not in pat else pat.split('/')[-1]): "
+            "      fp = os.path.join(root, f) if rel != '.' else os.path.join('/workspace', f); "
+            "      results.append(os.path.relpath(fp, '/workspace')); "
+            "for r in sorted(set(results)): print(r.replace(chr(92),'/'))"
+        )
+        # Simpler approach: use find with -name but properly shquote the pattern
+        # Actually let's use a safer find command with shquote'd pattern
+        if "**/" in norm:
+            pat = norm.split("**/")[-1]
+            prune_args = " ".join(f"-name {d} -prune -o" for d in DEFAULT_IGNORE_DIRS)
+            cmd = f"find /workspace {prune_args} -name {shquote(pat)} -type f -print | sed 's|^/workspace/||'"
         else:
-            cmd = f"find /workspace -maxdepth 3 -type d \\( {' -o '.join('-name '+d for d in DEFAULT_IGNORE_DIRS) } \\) -prune -o -name '{norm}' -type f -print"
-        r = self._docker_exec(cmd, timeout=10)
-        results = []
-        for line in r.stdout.splitlines():
-            line = line.strip()
-            if line.startswith("/workspace/"):
-                results.append(line[len("/workspace/"):])
+            prune_args = " ".join(f"-name {d} -prune -o" for d in DEFAULT_IGNORE_DIRS)
+            cmd = f"find /workspace -maxdepth 5 {prune_args} -name {shquote(norm)} -type f -print | sed 's|^/workspace/||'"
+        r = self._docker_exec(cmd, timeout=15)
+        results = [line.strip() for line in r.stdout.splitlines() if line.strip()]
         return sorted(results)
 
     def grep(self, pattern: str, glob_filter: Optional[str] = None,
              ignore_case: bool = False) -> list[GrepMatch]:
-        flag = "-rn" + ("i" if ignore_case else "")
-        include = f"--include='{glob_filter}'" if glob_filter else ""
+        """Use container grep with binary-skip and properly shquote'd pattern."""
+        flag = "-rn" + ("i" if ignore_case else "") + "I"  # -I skips binary files
+        include = f"--include={shquote(glob_filter)}" if glob_filter else ""
         exclude_args = " ".join(f"--exclude-dir={d}" for d in DEFAULT_IGNORE_DIRS)
-        cmd = f"grep {flag} {exclude_args} {include} {shquote(pattern)} /workspace || true"
+        # Binary extensions to exclude
+        binary_excludes = " ".join(f"--exclude=*{ext}" for ext in BINARY_EXTENSIONS)
+        cmd = f"grep {flag} {exclude_args} {binary_excludes} {include} {shquote(pattern)} /workspace || true"
         r = self._docker_exec(cmd, timeout=15)
         results: list[GrepMatch] = []
         for line in r.stdout.splitlines():
-            # format: /workspace/path:lineno:content
             parts = line.split(":", 2)
             if len(parts) < 3:
                 continue
@@ -284,27 +346,24 @@ class DockerSandbox(Sandbox):
         return results
 
     def list_dir(self, path: str = ".", max_depth: int = 2) -> dict:
-        # Use find
-        cp = f"/workspace/{path.lstrip('/')}" if path != "." else "/workspace"
+        cp = self._safe_container_path(path)
         depth_arg = f"-maxdepth {max_depth + 1}"
-        exclude_prune = " ".join(f"-name {d} -prune -o" for d in DEFAULT_IGNORE_DIRS)
-        cmd = f"find {shquote(cp)} {depth_arg} {exclude_prune} -print"
+        prune_args = " ".join(f"-name {d} -prune -o" for d in DEFAULT_IGNORE_DIRS)
+        cmd = f"find {shquote(cp)} {depth_arg} {prune_args} -print | sed 's|^{shquote(cp)}/||' | sort"
         r = self._docker_exec(cmd, timeout=10)
-        root_len = len(cp) + 1
         tree: dict = {}
-        for line in sorted(r.stdout.splitlines()):
-            if not line.startswith(cp):
-                continue
-            rel = line[root_len:]
-            if not rel:
+        base_prefix_len = len(cp) + 1
+        for line in r.stdout.splitlines():
+            rel = line[base_prefix_len:] if line.startswith(cp + "/") else line
+            if not rel or rel == ".":
                 continue
             parts = rel.split("/")
             node = tree
             for i, p in enumerate(parts):
-                is_dir = line.endswith("/") or (i < len(parts) - 1)
+                is_dir = (i < len(parts) - 1)
                 key = p + "/" if is_dir else p
                 if key not in node:
-                    node[key] = {} if is_dir or i < len(parts) - 1 else None
+                    node[key] = {} if is_dir else None
                 if node[key] is None:
                     break
                 node = node[key]
@@ -321,17 +380,10 @@ class DockerSandbox(Sandbox):
     def _fallback_repo_tree(self) -> str:
         """Container-side find listing fallback."""
         r = self._docker_exec(
-            "find /workspace -type f -not -path '*/.git/*' -not -path '*/__pycache__/*' | head -200"
+            "find /workspace -type f -not -path '*/.git/*' -not -path '*/__pycache__/*' | head -200 | sed 's|^/workspace/||'"
         )
         lines = ["# Repo tree (container)", ""]
         for ln in r.stdout.splitlines():
-            if ln.startswith("/workspace/"):
-                lines.append("  " + ln[len("/workspace/"):])
+            if ln.strip():
+                lines.append("  " + ln.strip())
         return "\n".join(lines)
-
-def shquote(s: str) -> str:
-    """Single-quote a string for sh -c, safely."""
-    return "'" + s.replace("'", "'\"'\"'") + "'"
-
-
-

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from repopilot.sandbox.base import (
+    BINARY_EXTENSIONS,
     DEFAULT_IGNORE_DIRS,
     ExecResult,
     FileReadResult,
@@ -50,26 +51,59 @@ class LocalSandbox(Sandbox):
         )
 
     def write_file(self, path: str, content: str) -> None:
+        """Atomic write: write to .tmp then os.replace() (atomic on same filesystem)."""
         p = self._safe_path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(content)
+        import tempfile
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), prefix=f".{p.name}.tmp.", suffix="")
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp_path, str(p))  # atomic on POSIX and Windows (if same volume)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def edit_file(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
         p = self._safe_path(path)
         if not p.exists():
             raise FileNotFoundError(f"File not found: {path}")
+        # Require context for unique matches (but allow replace_all with short strings)
+        stripped = old_string.strip()
+        if len(stripped) < 3:
+            raise ValueError(
+                f"old_string too short ({len(stripped)} non-whitespace chars). "
+                f"Include at least 3 chars of surrounding context for reliable matching."
+            )
         original = p.read_text(encoding="utf-8", errors="replace")
-        if old_string not in original:
-            # Find closest match to help agent
+        occurrences = original.count(old_string)
+        if occurrences == 0:
             close = difflib.get_close_matches(old_string, original.splitlines(), n=1, cutoff=0.6)
             hint = f"\nClosest match:\n{close[0]!r}" if close else ""
+            raise ValueError(f"old_string not found in {path}.{hint}")
+        if occurrences > 1 and not replace_all:
             raise ValueError(
-                f"old_string not found in {path}.{hint}"
+                f"old_string appears {occurrences} times in {path}. "
+                f"Include more surrounding context to make the match unique, or set replace_all=true."
             )
         count = -1 if replace_all else 1
         new_content = original.replace(old_string, new_string, count)
-        p.write_text(new_content, encoding="utf-8")
+        # Atomic write: temp file then os.replace (atomic on same volume)
+        import tempfile as _tf
+        tmp_fd, tmp_path = _tf.mkstemp(dir=str(p.parent), prefix=f".{p.name}.edit.", suffix="")
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                f.write(new_content)
+            os.replace(tmp_path, str(p))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
         diff = difflib.unified_diff(
             original.splitlines(keepends=True),
             new_content.splitlines(keepends=True),
@@ -77,6 +111,7 @@ class LocalSandbox(Sandbox):
             tofile=f"b/{p.relative_to(self.repo_path)}",
         )
         return "".join(diff)
+
 
     # ── exec ──────────────────────────────────────
     def exec(self, command: str, timeout: int = 30, cwd: Optional[str] = None) -> ExecResult:
@@ -170,6 +205,8 @@ class LocalSandbox(Sandbox):
                 try:
                     rel = str(fpath.relative_to(self.repo_path)).replace(os.sep, "/")
                 except ValueError:
+                    continue
+                if fpath.suffix.lower() in BINARY_EXTENSIONS:
                     continue
                 try:
                     with open(fpath, "r", encoding="utf-8", errors="replace") as f:

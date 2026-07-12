@@ -57,6 +57,18 @@ class FileReadResult:
     truncated: bool = False
 
 
+# Binary file extensions to skip in grep/read
+BINARY_EXTENSIONS = frozenset({
+    ".pyc", ".pyo", ".so", ".dylib", ".dll", ".exe", ".bin",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg",
+    ".pdf", ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".mp3", ".mp4", ".wav", ".avi", ".mkv", ".mov",
+    ".db", ".sqlite", ".sqlite3",
+    ".class", ".jar", ".war",
+    ".o", ".obj", ".a", ".lib", ".pyd",
+})
+
 # Patterns for directories to skip in grep/glob/list_dir
 DEFAULT_IGNORE_DIRS = {
     ".git", "__pycache__", "node_modules", ".venv", "venv", "env",

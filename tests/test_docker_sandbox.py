@@ -86,6 +86,6 @@ def test_shquote():
 
 def test_container_path_under_workspace(tmp_path):
     s, _, _ = _make_sandbox(tmp_path)
-    assert s._container_path("main.py") == "/workspace/main.py"
-    assert s._container_path("pkg/utils.py") == "/workspace/pkg/utils.py"
-    assert s._container_path("/etc/passwd") == "/workspace/etc/passwd"  # stripped leading slash
+    assert s._safe_container_path("main.py") == "/workspace/main.py"
+    assert s._safe_container_path("pkg/utils.py") == "/workspace/pkg/utils.py"
+    assert s._safe_container_path("/etc/passwd") == "/workspace/etc/passwd"  # stripped leading slash

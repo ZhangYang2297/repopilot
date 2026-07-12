@@ -103,8 +103,11 @@ class RunPythonTool(Tool):
         timeout = min(int(args.get("timeout", self.DEFAULT_TIMEOUT)), self.MAX_TIMEOUT)
 
         tmp_name = f"_runpy_{_uuid.uuid4().hex[:8]}.py"
+        tmp_host_path = None
         try:
             sandbox.write_file(tmp_name, code)
+            # Resolve host path for direct cleanup (avoid permission prompt for rm)
+            tmp_host_path = sandbox.repo_path / tmp_name
         except Exception as e:
             return ToolResult(error=f"Failed to write temp script: {e}")
         try:
@@ -114,9 +117,16 @@ class RunPythonTool(Tool):
         except Exception as e:
             return ToolResult(error=f"{type(e).__name__}: {e}")
         finally:
+            # Clean up temp file directly on the host filesystem to avoid permission prompts
+            if tmp_host_path and tmp_host_path.exists():
+                try:
+                    tmp_host_path.unlink()
+                except OSError:
+                    pass
+            # Also try container-side cleanup for Docker sandbox
             try:
-                rm_cmd = "del " + tmp_name if _os.name == "nt" else "rm -f " + tmp_name
-                sandbox.exec(rm_cmd, timeout=5)
+                if hasattr(sandbox, "_docker_exec"):
+                    sandbox._docker_exec(f"rm -f /workspace/{tmp_name}", timeout=5)
             except Exception:
                 pass
 
