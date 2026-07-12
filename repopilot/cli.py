@@ -149,11 +149,157 @@ def chat(
 ) -> None:
     """Run agent on a task in a repo."""
     _ensure_configured()
-    console.print("[yellow]TODO:[/yellow] agent loop not yet implemented")
-    s = get_settings()
-    console.print(f"  task={task!r}")
-    console.print(f"  repo={repo} model={model or s.model} sandbox={sandbox or s.sandbox_type!r}")
-    console.print(f"  approval_mode={approval_mode} max_steps={max_steps}")
+    import time
+    from rich.panel import Panel
+    from rich.live import Live
+    from rich.markdown import Markdown
+    from rich.syntax import Syntax
+    from rich.text import Text
+
+    from repopilot.config import get_settings as _gs
+    from repopilot.llm.service import build_llm_from_settings
+    from repopilot.sandbox import LocalSandbox, DockerSandbox
+    from repopilot.permission.engine import PermissionEngine
+    from repopilot.hooks.manager import HookManager
+    from repopilot.hooks.builtin import install_builtin_hooks
+    from repopilot.agent.cost import CostTracker
+    from repopilot.session.store import SessionStore
+    from repopilot.agent.loop import run_agent, StreamEvent
+
+    s = _gs()
+    chosen_model = model or s.model
+    sandbox_type = sandbox or s.sandbox_type
+    repo_path = Path(repo).resolve()
+
+    if not repo_path.exists():
+        console.print(f"[red]Repo path does not exist: {repo_path}[/red]")
+        raise typer.Exit(1)
+
+    # ── Build LLM ───────────────────────────────
+    if model:
+        # Override model in settings
+        from repopilot.config import Settings as _S
+        s = _S.load(model=model)
+    try:
+        llm = build_llm_from_settings(s)
+    except Exception as e:
+        console.print(f"[red]Failed to initialize LLM: {e}[/red]")
+        raise typer.Exit(1)
+
+    # ── Build Sandbox ────────────────────────────
+    use_docker = sandbox_type == "docker"
+    try:
+        if use_docker:
+            sb = DockerSandbox(
+                repo_path,
+                mem_limit=s.docker_mem_limit,
+                network_mode="bridge" if s.docker_network else "none",
+            )
+        else:
+            sb = LocalSandbox(repo_path)
+    except Exception as e:
+        console.print(f"[red]Failed to create sandbox: {e}[/red]")
+        raise typer.Exit(1)
+
+    # ── Permission Engine ───────────────────────
+    if approval_mode not in PermissionEngine.VALID_MODES:
+        console.print(f"[red]Invalid approval mode: {approval_mode}[/red]")
+        raise typer.Exit(1)
+    pe = PermissionEngine(mode=approval_mode, network_enabled=True)
+
+    # ── Hooks ───────────────────────────────────
+    hooks = HookManager()
+    cost_tracker = CostTracker()
+    install_builtin_hooks(hooks, cost_tracker=cost_tracker)
+
+    # ── Session Store ───────────────────────────
+    session_store = SessionStore(sessions_dir=s.sessions_dir)
+
+    # ── Streaming UI state ──────────────────────
+    import threading
+    state = {"status": "starting", "current_tool": "", "last_result": "", "answer": ""}
+
+    def on_event(evt: StreamEvent):
+        if evt.type == "thinking":
+            state["status"] = f"thinking (step {evt.data.get('step', '?')})"
+        elif evt.type == "tool_call":
+            name = evt.data.get("name", "?")
+            args = evt.data.get("args", {})
+            arg_str = ", ".join(f"{k}={str(v)[:40]}" for k, v in args.items())
+            state["current_tool"] = f"{name}({arg_str})"
+            state["status"] = "executing tool"
+        elif evt.type == "tool_result":
+            state["last_result"] = evt.data.get("result", "")[:300]
+        elif evt.type == "text":
+            if evt.data.get("role") == "assistant":
+                state["answer"] += evt.data.get("content", "")
+        elif evt.type == "finish":
+            state["status"] = "finished"
+        elif evt.type == "error":
+            state["status"] = f"error: {evt.data.get('message', '')[:100]}"
+        elif evt.type == "compact":
+            state["status"] = f"compacting context ({evt.data.get('level', '')})"
+
+    # ── Header panel ────────────────────────────
+    console.print(Panel(
+        f"[bold]Task:[/bold] {task}\n"
+        f"[bold]Repo:[/bold] {repo_path}\n"
+        f"[bold]Model:[/bold] {s.model}\n"
+        f"[bold]Sandbox:[/bold] {sandbox_type}\n"
+        f"[bold]Approval:[/bold] {approval_mode}",
+        title="RepoPilot", border_style="cyan",
+    ))
+
+    # ── Run agent ───────────────────────────────
+    t0 = time.time()
+    try:
+        with sb:
+            result = run_agent(
+                task=task,
+                repo_path=repo_path,
+                llm=llm,
+                sandbox=sb,
+                permission_engine=pe,
+                hooks=hooks,
+                session_store=session_store,
+                max_steps=max_steps,
+                budget_tokens=budget_tokens,
+                stream_callback=on_event,
+                verbose=verbose,
+            )
+    except Exception as e:
+        console.print(f"[red]Agent failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    elapsed = time.time() - t0
+
+    # ── Output result ───────────────────────────
+    console.print()
+    console.rule("[bold green]Result[/bold green]")
+    if result.summary:
+        console.print(Markdown(result.summary))
+    console.print()
+
+    # Status
+    status_color = {
+        "completed": "green", "max_steps": "yellow",
+        "cancelled": "yellow", "error": "red",
+    }.get(result.status, "white")
+    console.print(f"[bold {status_color}]Status:[/bold {status_color}] {result.status}")
+    console.print(f"[bold]Steps:[/bold] {result.steps}")
+    console.print(f"[bold]Duration:[/bold] {elapsed:.1f}s")
+    console.print(cost_tracker.format_summary())
+    if result.session_id:
+        console.print(f"[dim]Session: {result.session_id}[/dim]")
+    if result.error:
+        console.print(f"[red]Error: {result.error}[/red]")
+    if result.trajectory and verbose:
+        console.print()
+        console.rule("[bold]Trajectory[/bold]")
+        for step in result.trajectory:
+            console.print(f"  Step {step['step']}: [cyan]{step['tool']}[/cyan] {list(step['args'].keys())}")
+            if step.get("error"):
+                console.print(f"    [red]Error: {step['error']}[/red]")
 
 
 @config_app.command("show")
