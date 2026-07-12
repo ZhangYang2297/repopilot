@@ -5,6 +5,7 @@ from rich.table import Table
 from pathlib import Path
 
 from repopilot.config import get_settings, reset_settings_for_tests, Settings
+from repopilot.repl import run_repl
 
 # Fix Windows console encoding for Rich/Markdown output (bullet chars, etc.)
 import sys as _sys
@@ -82,9 +83,23 @@ def _ensure_configured() -> None:
 
 
 @app.callback(invoke_without_command=True)
-def _main(ctx: typer.Context):
+def _main(ctx: typer.Context,
+          repo: str = typer.Option(".", "--repo", "-r", help="Path to target repo"),
+          sandbox: str = typer.Option("local", "--sandbox", help="docker or local"),
+          approval_mode: str = typer.Option("auto", "--approval-mode", help="auto|confirm|edit-only|deny"),
+          model: str = typer.Option("", "--model", "-m", help="Override model"),
+          verbose: bool = typer.Option(False, "--verbose", "-v")):
     if ctx.invoked_subcommand is None:
         _ensure_configured()
+        import os
+        repo_path = Path(repo).resolve()
+        run_repl(
+            repo_path=repo_path,
+            approval_mode=approval_mode,
+            sandbox_type=sandbox,
+            model_override=model,
+            verbose=verbose,
+        )
 
 
 @app.command("models")
@@ -138,15 +153,15 @@ def chat(
     task: str = typer.Argument(..., help="Task to perform"),
     repo: str = typer.Option(".", "--repo", "-r", help="Path to target repo"),
     model: str = typer.Option("", "--model", "-m", help="Override model"),
-    sandbox: str = typer.Option("", "--sandbox", help="docker or local"),
+    sandbox: str = typer.Option("local", "--sandbox", help="docker or local"),
     approval_mode: str = typer.Option(
-        "confirm", "--approval-mode", help="auto|confirm|edit-only|deny"
+        "auto", "--approval-mode", help="auto|confirm|edit-only|deny"
     ),
     max_steps: int = typer.Option(50, "--max-steps", help="Max agent steps"),
     budget_tokens: int = typer.Option(200_000, "--budget-tokens", help="Input token budget"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Run agent on a task in a repo."""
+    """Run agent on a single task (non-interactive). Same as: repopilot -r . "task"."""
     _ensure_configured()
     import time
     from rich.panel import Panel
