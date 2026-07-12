@@ -140,10 +140,12 @@ def micro_compact(steps: list[dict], llm: Any) -> CompactResult:
 
     prompt = MICRO_COMPACT_PROMPT.format(n_steps=len(steps), steps_text=steps_text)
     try:
-        summary = llm.chat_fast([
+        from repopilot.llm.service import Tier
+        resp = llm.chat([
             {"role": "system", "content": "You are a concise summarizer."},
             {"role": "user", "content": prompt},
-        ])
+        ], tier=Tier.FAST)
+        summary = resp.content
     except Exception:
         summary = f"[{len(steps)} earlier steps summarized but LLM unavailable]"
 
@@ -173,10 +175,12 @@ def auto_compact(steps: list[dict], llm: Any, keep_recent: int = 10) -> CompactR
 
     prompt = AUTO_COMPACT_PROMPT.format(keep_recent=keep_recent, steps_text=steps_text)
     try:
-        summary = llm.chat_fast([
+        from repopilot.llm.service import Tier
+        resp = llm.chat([
             {"role": "system", "content": "You are a precise engineering summarizer."},
             {"role": "user", "content": prompt},
-        ])
+        ], tier=Tier.FAST)
+        summary = resp.content
     except Exception:
         summary = f"## Summary\n[{len(to_compact)} earlier steps - LLM unavailable for detailed summary]"
 

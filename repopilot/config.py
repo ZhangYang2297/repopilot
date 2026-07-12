@@ -77,12 +77,21 @@ class Settings:
             raise ValueError("max_steps must be >= 1")
         if self.budget_tokens < 1000:
             raise ValueError("budget_tokens must be >= 1000")
-        for f in (self.model, self.fast_model, self.strong_model):
-            if f and "/" not in f:
+        # Validate model format only for fields that are set
+        for fname in ("model", "fast_model", "strong_model"):
+            val = getattr(self, fname)
+            if val and "/" not in val:
                 raise ValueError(
-                    f"model must be in 'provider/model' format (LiteLLM), got {f!r}. "
-                    f"Examples: openai/gpt-4o-mini, openai/qwen2.5-coder-32b-instruct"
+                    f"{fname} must be in 'provider/model' format (LiteLLM), got {val!r}. "
+                    f"Examples: openai/gpt-4o-mini, openai/doubao-seed-evolving"
                 )
+        # Auto-derive fast/strong from model if not explicitly set
+        # (do this after validation so derived values are also valid)
+        if self.model:
+            if not self.fast_model:
+                self.fast_model = self.model
+            if not self.strong_model:
+                self.strong_model = self.model
 
     # ── directory helpers ──────────────────────────────────
     @property
@@ -203,14 +212,8 @@ class Settings:
             if hasattr(s, k):
                 setattr(s, k, v)
 
-        # Final normalize
+        # Final normalize (__post_init__ auto-derives fast/strong from model)
         s.__post_init__()
-        # Auto-derive fast/strong if only model is set
-        if s.model and not s.fast_model:
-            s.fast_model = s.model
-        if s.model and not s.strong_model:
-            s.strong_model = s.model
-
         s.ensure_dirs()
         return s
 

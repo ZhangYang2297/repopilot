@@ -48,19 +48,11 @@ def _ensure_configured() -> None:
         "You'll need an OpenAI-compatible API key (sk-...) and a base URL.\n"
     )
     model = typer.prompt(
-        "Model (provider/model, e.g. openai/gpt-4o-mini, openai/qwen2.5-coder-32b-instruct)"
+        "Model (provider/model, e.g. openai/doubao-seed-evolving for Volcengine ARK, or openai/gpt-4o)"
     ).strip()
     api_key = typer.prompt("API key (sk-...)", hide_input=True).strip()
     base_url = typer.prompt(
-        "Base URL (press Enter for default OpenAI)",
-        default="", show_default=False,
-    ).strip()
-    fast = typer.prompt(
-        "Fast/cheap model for planning/reflection (Enter to use same as model)",
-        default="", show_default=False,
-    ).strip()
-    strong = typer.prompt(
-        "Strong model for final answers (Enter to use same as model)",
+        "Base URL (press Enter for default OpenAI, or enter e.g. https://ark.cn-beijing.volces.com/api/v3)",
         default="", show_default=False,
     ).strip()
 
@@ -68,17 +60,14 @@ def _ensure_configured() -> None:
         model=model,
         api_key=api_key,
         base_url=base_url or "",
-        fast_model=fast or model,
-        strong_model=strong or model,
     )
     new.save()
-    reset_settings_for_tests()  # so next get_settings() reloads
+    reset_settings_for_tests()
     console.print(f"\n[green]Configuration saved to {new.config_file}[/green]")
-    console.print(f"  model       = {new.model}")
-    console.print(f"  fast_model  = {new.fast_model}")
-    console.print(f"  strong_model= {new.strong_model}")
+    console.print(f"  model    = {new.model}")
     if new.base_url:
-        console.print(f"  base_url    = {new.base_url}")
+        console.print(f"  base_url = {new.base_url}")
+    console.print("(fast_model and strong_model auto-default to the same model; use `repopilot model` to change)")
     console.print()
 
 
