@@ -6,6 +6,16 @@ from pathlib import Path
 
 from repopilot.config import get_settings, reset_settings_for_tests, Settings
 
+# Fix Windows console encoding for Rich/Markdown output (bullet chars, etc.)
+import sys as _sys
+import io as _io
+if _sys.platform == "win32":
+    try:
+        _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        _sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Recommended models (tested on Volcengine ARK). Users can set any LiteLLM-compatible model.
 RECOMMENDED_MODELS = {
     "fast": [
@@ -266,7 +276,10 @@ def chat(
     console.print()
     console.rule("[bold green]Result[/bold green]")
     if result.summary:
-        console.print(Markdown(result.summary))
+        try:
+            console.print(Markdown(result.summary))
+        except Exception:
+            console.print(result.summary)
     console.print()
 
     # Status
