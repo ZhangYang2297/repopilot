@@ -311,8 +311,15 @@ class DockerSandbox(Sandbox):
         return tree
 
     def get_repo_tree(self, max_tokens: int = 4000) -> str:
-        # Delegate to local filesystem (repo is bind-mounted, same view)
-        # Fallback simple find listing
+        """Tree-sitter powered repo map via bind-mounted host path; fallback to container find."""
+        try:
+            from repopilot.code_index.repo_map import RepoMapBuilder
+            return RepoMapBuilder(self.repo_path, max_tokens=max_tokens).build()
+        except Exception:
+            return self._fallback_repo_tree()
+
+    def _fallback_repo_tree(self) -> str:
+        """Container-side find listing fallback."""
         r = self._docker_exec(
             "find /workspace -type f -not -path '*/.git/*' -not -path '*/__pycache__/*' | head -200"
         )
@@ -322,9 +329,9 @@ class DockerSandbox(Sandbox):
                 lines.append("  " + ln[len("/workspace/"):])
         return "\n".join(lines)
 
-
 def shquote(s: str) -> str:
     """Single-quote a string for sh -c, safely."""
     return "'" + s.replace("'", "'\"'\"'") + "'"
+
 
 

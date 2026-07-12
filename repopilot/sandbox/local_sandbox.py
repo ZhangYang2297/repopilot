@@ -213,11 +213,17 @@ class LocalSandbox(Sandbox):
         return tree
 
     def get_repo_tree(self, max_tokens: int = 4000) -> str:
-        """Simple file listing (T11 will replace with tree-sitter Repo Map)."""
-        files = self.glob("*")
+        """Tree-sitter powered repo map with fallback to simple file listing."""
+        try:
+            from repopilot.code_index.repo_map import RepoMapBuilder
+            return RepoMapBuilder.from_sandbox(self, max_tokens=max_tokens)
+        except Exception:
+            return self._fallback_repo_tree(max_tokens)
+
+    def _fallback_repo_tree(self, max_tokens: int = 4000) -> str:
+        """Simple recursive file listing fallback when tree-sitter is unavailable."""
         all_files = []
-        # Expand all files recursively (limited)
-        for pat in ["*.py", "*.js", "*.ts", "*.md", "*.txt", "*.toml", "*.yaml", "*.json"]:
+        for pat in ["**/*.py", "**/*.js", "**/*.ts", "**/*.md", "**/*.txt", "**/*.toml", "**/*.yaml", "**/*.json"]:
             all_files.extend(self.glob(pat))
         all_files = sorted(set(all_files))
         lines = [f"# Repo tree: {self.repo_path.name}", ""]
@@ -226,10 +232,10 @@ class LocalSandbox(Sandbox):
         for f in all_files[:200]:
             line = f"  {f}"
             if total + len(line) > max_tokens * 4:
-                lines.append(f"  ... (+{len(all_files) - all_files.index(f)} more)")
+                idx = all_files.index(f)
+                lines.append(f"  ... (+{len(all_files) - idx} more)")
                 break
             lines.append(line)
             total += len(line)
         return "\n".join(lines)
-
 

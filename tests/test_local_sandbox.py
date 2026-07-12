@@ -159,7 +159,8 @@ def test_get_repo_tree(tmp_repo):
     with LocalSandbox(tmp_repo) as s:
         tree = s.get_repo_tree()
         assert "main.py" in tree
-        assert "Files:" in tree
+        assert "# Repo Map" in tree
+        assert "def add" in tree or "add" in tree
 
 
 def test_exec_working_dir(tmp_repo):
