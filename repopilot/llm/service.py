@@ -57,7 +57,7 @@ def _is_retryable(exc: Exception) -> bool:
 class LLMService:
     """Unified LLM client with 3-tier routing, retries, jitter, circuit breaker."""
 
-    TIER_TIMEOUTS = {Tier.FAST: 15, Tier.DEFAULT: 25, Tier.STRONG: 40}
+    TIER_TIMEOUTS = {Tier.FAST: 30, Tier.DEFAULT: 120, Tier.STRONG: 300}
 
     def __init__(
         self,

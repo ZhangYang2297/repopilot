@@ -43,11 +43,11 @@ class Settings:
     approval_mode: str = "confirm"           # auto | confirm | edit-only | deny
 
     # Agent
-    max_steps: int = 50
-    budget_tokens: int = 200_000
-    tool_timeout: int = 30
+    max_steps: int = 200
+    budget_tokens: int = 500_000
+    tool_timeout: int = 120
     reflect_every: int = 5
-    max_consecutive_failures: int = 5
+    max_consecutive_failures: int = 10
 
     # Paths (not persisted to config.toml — always derived)
     home_dir: Path = field(default_factory=lambda: _expand(

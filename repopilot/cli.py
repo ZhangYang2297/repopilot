@@ -40,7 +40,7 @@ app = typer.Typer(
     name="repopilot",
     help="RepoPilot - Local-first code agent.",
     add_completion=False,
-    no_args_is_help=True,
+    no_args_is_help=False,
 )
 console = Console()
 config_app = typer.Typer(help="Manage configuration.", add_completion=False)

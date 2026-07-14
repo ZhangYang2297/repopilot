@@ -1,6 +1,7 @@
 """Execution tools: bash and run_python."""
 from __future__ import annotations
 import os as _os
+import platform as _platform
 import uuid as _uuid
 from typing import TYPE_CHECKING, Any
 
@@ -10,14 +11,20 @@ from repopilot.tools.result import ToolResult, truncate_text
 if TYPE_CHECKING:
     from repopilot.sandbox.base import Sandbox
 
+_IS_WINDOWS = _platform.system() == "Windows"
+
 
 class BashTool(Tool):
     name = "bash"
     description = (
         "Execute a shell command in the repository working directory. "
-        "Use this to run tests, builds, linters, git commands, or any CLI tool. "
-        "Output is truncated (head 500 + tail 1500 chars). "
-        "For Python scripts prefer run_python; for project commands (pytest, npm, git) use bash."
+        "Use this to run tests, builds, linters, pip install, git commands, or any CLI tool. "
+        "Output is truncated (head 2000 + tail 5000 chars). "
+        "For Python scripts prefer run_python; for project commands (pytest, npm, git, pip) use bash.\n\n"
+        "IMPORTANT PLATFORM NOTES:\n"
+        f"- This system is {'Windows' if _IS_WINDOWS else 'Linux/macOS'}. Use the appropriate commands.\n"
+        "- On Windows: use `dir` not `ls`, `type` not `cat`, `del` not `rm`, `copy` not `cp`, "
+        "`move` not `mv`, `findstr` not `grep`. Avoid Unix-only commands like `pwd`, `chmod`, `which`, `/dev/null`."
     )
     parameters = {
         "type": "object",
@@ -28,8 +35,9 @@ class BashTool(Tool):
             },
             "timeout": {
                 "type": "integer",
-                "description": "Timeout in seconds (default 30, max 120).",
-                "default": 30,
+                "description": "Timeout in seconds (default 120, max 600). "
+                               "Use 300 for full test suites, 600 for npm/pip install.",
+                "default": 120,
             },
             "cwd": {
                 "type": "string",
@@ -40,8 +48,8 @@ class BashTool(Tool):
     }
     tier = TIER_EXEC
 
-    DEFAULT_TIMEOUT = 30
-    MAX_TIMEOUT = 120
+    DEFAULT_TIMEOUT = 120
+    MAX_TIMEOUT = 600
 
     def execute(self, args: dict[str, Any], sandbox: "Sandbox", extra=None) -> ToolResult:
         cmd = args.get("command", "").strip()
@@ -50,6 +58,10 @@ class BashTool(Tool):
         timeout = min(int(args.get("timeout", self.DEFAULT_TIMEOUT)), self.MAX_TIMEOUT)
         cwd = args.get("cwd")
 
+        # Auto-translate common Unix commands on Windows (best-effort)
+        if _IS_WINDOWS:
+            cmd = _windows_cmd_fix(cmd)
+
         try:
             result = sandbox.exec(cmd, timeout=timeout, cwd=cwd)
         except PermissionError as e:
@@ -57,15 +69,58 @@ class BashTool(Tool):
         except Exception as e:
             return ToolResult(error=f"{type(e).__name__}: {e}")
 
-        output = result.truncated(head=500, tail=1500)
+        output = result.truncated(head=2000, tail=5000)
         meta = {
             "exit_code": result.exit_code,
             "timed_out": result.timed_out,
             "duration_ms": result.duration_ms,
         }
         if result.timed_out:
-            output += f"\n[command timed out after {timeout}s]"
+            output += f"\n[command timed out after {timeout}s — try increasing timeout parameter]"
         return ToolResult(content=output, metadata=meta)
+
+
+def _windows_cmd_fix(cmd: str) -> str:
+    """Best-effort translation of common Unix commands to Windows equivalents.
+    Only applies to the first word in a pipeline/chain to avoid breaking things."""
+    # Strip leading/trailing whitespace
+    stripped = cmd.strip()
+    # Simple translations for common patterns (not full shell translation)
+    translations = {
+        "ls": "dir",
+        "cat": "type",
+        "pwd": "cd",
+        "cp": "copy",
+        "mv": "move",
+        "which": "where",
+        "clear": "cls",
+        "diff": "fc",
+    }
+    if any(kw in stripped for kw in ["&&", "||", "|", ";"]):
+        return cmd
+    parts = stripped.split(None, 2)
+    if not parts:
+        return cmd
+    first = parts[0].lower()
+    rest = parts[1] if len(parts) > 1 else ""
+    rest2 = parts[2] if len(parts) > 2 else ""
+    if any(stripped.startswith(p) for p in ("python", "py", "pip", "git", "npm", "node", "pytest", "uv", "dir", "type", "del", "copy", "move", "rmdir", "findstr", "cls", "cd", "set", "echo", "where", "fc")):
+        return cmd
+    if first == "rm" and rest.startswith("-rf"):
+        return f"rmdir /s /q {rest2}".strip()
+    if first == "rm" and rest.startswith("-r"):
+        return f"rmdir /s /q {rest2}".strip()
+    if first == "rm":
+        return f"del /q {rest}".strip()
+    if first == "touch":
+        return f"type nul > {rest}".strip()
+    if first == "grep":
+        return f"findstr {rest}".strip()
+    if first == "export" and "=" in rest:
+        return f"set {rest}".strip()
+    if first in translations:
+        return f"{translations[first]} {rest}".strip()
+    return cmd
 
 
 class RunPythonTool(Tool):
@@ -85,16 +140,16 @@ class RunPythonTool(Tool):
             },
             "timeout": {
                 "type": "integer",
-                "description": "Timeout in seconds (default 10, max 60).",
-                "default": 10,
+                "description": "Timeout in seconds (default 30, max 300).",
+                "default": 30,
             },
         },
         "required": ["code"],
     }
     tier = TIER_EXEC
 
-    DEFAULT_TIMEOUT = 10
-    MAX_TIMEOUT = 60
+    DEFAULT_TIMEOUT = 30
+    MAX_TIMEOUT = 300
 
     def execute(self, args: dict[str, Any], sandbox: "Sandbox", extra=None) -> ToolResult:
         code = args.get("code", "")
@@ -106,7 +161,6 @@ class RunPythonTool(Tool):
         tmp_host_path = None
         try:
             sandbox.write_file(tmp_name, code)
-            # Resolve host path for direct cleanup (avoid permission prompt for rm)
             tmp_host_path = sandbox.repo_path / tmp_name
         except Exception as e:
             return ToolResult(error=f"Failed to write temp script: {e}")
@@ -117,20 +171,18 @@ class RunPythonTool(Tool):
         except Exception as e:
             return ToolResult(error=f"{type(e).__name__}: {e}")
         finally:
-            # Clean up temp file directly on the host filesystem to avoid permission prompts
             if tmp_host_path and tmp_host_path.exists():
                 try:
                     tmp_host_path.unlink()
                 except OSError:
                     pass
-            # Also try container-side cleanup for Docker sandbox
             try:
                 if hasattr(sandbox, "_docker_exec"):
                     sandbox._docker_exec(f"rm -f /workspace/{tmp_name}", timeout=5)
             except Exception:
                 pass
 
-        output = result.truncated(head=500, tail=2000)
+        output = result.truncated(head=2000, tail=5000)
         meta = {
             "exit_code": result.exit_code,
             "timed_out": result.timed_out,

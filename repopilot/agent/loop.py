@@ -33,6 +33,7 @@ from repopilot.session.store import SessionStore, Session
 from repopilot.tools.base import AgentFinished, Tool
 from repopilot.tools.registry import ToolRegistry
 from repopilot.tools.result import ToolResult
+from repopilot.memory import load_memory as _load_memory
 
 
 @dataclass
@@ -62,9 +63,12 @@ StreamCallback = Callable[[StreamEvent], None]
 
 def _load_system_prompt() -> str:
     """Load the system prompt from the prompts directory."""
+    import platform as _platform
     prompt_path = Path(__file__).parent / "prompts" / "system.md"
     if prompt_path.exists():
-        return prompt_path.read_text(encoding="utf-8")
+        text = prompt_path.read_text(encoding="utf-8")
+        plat = _platform.system()  # "Windows", "Linux", "Darwin"
+        return text.replace("{platform}", plat)
     return "You are a helpful coding assistant."
 
 
@@ -139,7 +143,7 @@ def run_agent(
         budget_tokens=budget_tokens,
         system_prompt=sys_prompt,
         repo_map_str=repo_map_str,
-        memory_str="",  # TODO: load from memories.md in future
+        memory_str=_load_memory(repo_path),
     )
 
     # ── Session ─────────────────────────────────

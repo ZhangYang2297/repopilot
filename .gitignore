@@ -18,3 +18,18 @@ reports/
 .cache/
 logs/
 *.log
+
+.eval/
+eval/results.json
+eval/memory_results.json
+tests/fixtures/todo_app/todos.json
+*.log
+
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

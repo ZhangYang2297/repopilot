@@ -11,8 +11,8 @@ def test_defaults():
     assert s.model == ""
     assert s.sandbox_type in ("docker", "local")
     assert s.approval_mode == "confirm"
-    assert s.max_steps == 50
-    assert s.budget_tokens == 200_000
+    assert s.max_steps == 200
+    assert s.budget_tokens == 500_000
     assert isinstance(s.home_dir, Path)
     assert s.compact_micro_ratio == 0.7
     assert s.compact_auto_ratio == 0.85

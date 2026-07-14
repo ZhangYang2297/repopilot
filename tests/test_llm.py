@@ -143,9 +143,9 @@ def test_timeout_passed_correctly(mock_c):
     mock_c.return_value = _make_completion("ok")
     svc = _make_llm()
     svc.chat([{"role": "user", "content": "hi"}], tier=Tier.FAST)
-    assert mock_c.call_args.kwargs["timeout"] == 15
+    assert mock_c.call_args.kwargs["timeout"] == 30
     svc.chat([{"role": "user", "content": "hi"}], tier=Tier.STRONG)
-    assert mock_c.call_args.kwargs["timeout"] == 40
+    assert mock_c.call_args.kwargs["timeout"] == 300
 
 
 def test_stream_not_implemented():
