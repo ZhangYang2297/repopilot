@@ -1,30 +1,25 @@
-.venv/
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
 dist/
 build/
-*.egg-info/
-.env
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing & benchmarks (dev-only, not part of runtime package)
+tests/
+eval/
+.pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.pytest_cache/
-__pycache__/
-*.pyc
-*.pyo
-*.db
-*.db-wal
-*.db-shm
-sessions/
-outputs/
-reports/
-.cache/
-logs/
-*.log
-
-.eval/
-eval/results.json
-eval/memory_results.json
-tests/fixtures/todo_app/todos.json
-*.log
-
+.coverage
+htmlcov/
 
 # IDE
 .vscode/
@@ -33,3 +28,20 @@ tests/fixtures/todo_app/todos.json
 *.swo
 .DS_Store
 Thumbs.db
+
+# Env & secrets
+.env
+*.db
+*.db-wal
+*.db-shm
+
+# Runtime generated data
+sessions/
+outputs/
+reports/
+.cache/
+logs/
+*.log
+
+# Personal study notes / interview prep (not for publication)
+docs/

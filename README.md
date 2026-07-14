@@ -4,22 +4,25 @@
 
 **Local-first AI code agent in your terminal.**
 
-Inspired by Claude Code and Codex CLI. Navigate to any project, run `repopilot`, and describe what you want done in natural language — RepoPilot reads, searches, edits, runs tests, and fixes bugs autonomously in a sandboxed environment.
+[English](README.md) | [中文](README.zh-CN.md)
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![PyPI version](https://img.shields.io/pypi/v/repopilot.svg)](https://pypi.org/project/repopilot/)
 
 </div>
 
-## Demo
+## What is RepoPilot?
 
-```bash
+RepoPilot is a CLI coding agent inspired by Claude Code and Codex CLI. Navigate to any project, run `repopilot`, and describe what you want done in natural language — RepoPilot reads, searches, edits, runs tests, and fixes bugs autonomously in a sandboxed environment.
+
+```
 $ cd your-project
 $ repopilot
 
 ────────────────────────────── RepoPilot ──────────────────────────────
   Directory: /your-project
-  Model:     openai/doubao-seed-evolving
+  Model:     doubao-seed-evolving
   Sandbox:   local
   Approval:  auto
 
@@ -32,43 +35,55 @@ repopilot> fix the failing test in test_auth.py
 > bash(command=python -m pytest test_auth.py -v)
 
   All tests pass. Fixed the token validation bug in auth.py line 42.
-
-repopilot> /exit
-Goodbye.
 ```
 
 ## Features
 
 - **Claude Code / Codex CLI style REPL** — `cd project && repopilot`, start chatting immediately
-- **Pure ReAct agent loop** — single model does all thinking (no multi-agent overhead)
+- **Pure ReAct agent loop** — single model does all thinking, no multi-agent overhead
 - **Persistent multi-turn conversation** with automatic context compaction
 - **Layered memory system** — global + project `REPOPILOT.md` files (like CLAUDE.md)
 - **Cross-session resume** — `/resume` to continue where you left off
-- **Docker sandbox** with CPU/memory limits, optional network isolation
+- **Docker sandbox** with CPU/memory limits and optional network isolation
 - **4 approval modes**: auto / confirm / edit-only / deny
-- **Dangerous command blacklist** (rm -rf /, curl|sh, force push, credential theft)
+- **Dangerous command blacklist** (path traversal, `rm -rf /`, `curl|sh`, force push, credential theft)
 - **10 built-in tools**: read/write/edit/grep/glob/list_dir/bash/run_python/repo_tree/finish
 - **tree-sitter repo map** — code structure overview without reading every file
-- **Circuit breaker + exponential backoff retry** for LLM calls
-- **Cross-platform** — Windows/Linux/macOS with automatic Unix→Windows command translation
-- **Any OpenAI-compatible LLM** — use your own API key (Volcengine ARK, DeepSeek, OpenAI, vLLM, etc.)
+- **Circuit breaker + exponential backoff** for reliable LLM calls
+- **Cross-platform** — Windows / Linux / macOS with automatic Unix→Windows command translation
+- **Any OpenAI-compatible LLM** — use your own API key (Doubao, DeepSeek, OpenAI, vLLM, local models, etc.)
 - **No RAG / no vector database** — deterministic grep/glob/tree-sitter retrieval is faster and more accurate for code
 
 ## Installation
 
 ```bash
-# Clone and install
-git clone https://github.com/yourusername/repopilot.git
-cd repopilot
-pip install -e .
+pip install repopilot
 ```
 
-On first run, you will be prompted for:
-- Model name (e.g. `openai/doubao-seed-evolving`, `openai/gpt-4o`, `openai/deepseek-chat`)
-- API key (sk-...)
-- Base URL (for providers other than OpenAI, e.g. `https://ark.cn-beijing.volces.com/api/v3`)
+Or install the latest version directly from GitHub:
 
-Or set environment variables:
+```bash
+pip install git+https://github.com/ZhangYang2297/repopilot.git
+```
+
+For an isolated install (recommended for CLI tools):
+
+```bash
+pipx install repopilot
+```
+
+**Requirements**: Python 3.10+
+
+### First Run
+
+On first run you will be prompted for your LLM configuration:
+
+1. **Model name** (e.g. `openai/doubao-seed-evolving`, `openai/gpt-4o`, `openai/deepseek-chat`)
+2. **API key** (sk-...)
+3. **Base URL** (for providers other than OpenAI, e.g. `https://ark.cn-beijing.volces.com/api/v3`)
+
+You can also configure via environment variables:
+
 ```bash
 export REPOPILOT_MODEL=openai/doubao-seed-evolving
 export REPOPILOT_API_KEY=sk-your-key
@@ -77,26 +92,29 @@ export REPOPILOT_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 
 ## Usage
 
-### Interactive mode (recommended)
+### Interactive Mode (Recommended)
+
 ```bash
 cd your-project
-repopilot                    # uses current directory, local sandbox, auto approval
-repopilot -r ../other-proj   # specify project directory
-repopilot --sandbox docker   # run in Docker container
+repopilot                          # current directory, local sandbox, auto approval
+repopilot -r ../other-proj         # specify a different project directory
+repopilot --sandbox docker         # run inside a Docker container
 repopilot --approval-mode confirm  # confirm before writes/executions
-repopilot -m openai/gpt-4o   # override model
+repopilot -m openai/gpt-4o         # override model
 ```
 
-### One-shot task mode
+### One-shot Task Mode
+
 ```bash
 repopilot chat "fix the bug in auth.py"
 repopilot chat "add --verbose flag to cli.py" -r ./myproj
 ```
 
-### Slash commands
+### Slash Commands
+
 | Command | Description |
 |---------|-------------|
-| `/exit`, `/quit` | Exit |
+| `/exit`, `/quit` | Exit (Ctrl+C / Ctrl+D also supported) |
 | `/help` | Show help |
 | `/model [name]` | Show or switch model |
 | `/approval [mode]` | Switch approval mode |
@@ -125,7 +143,32 @@ Create a `REPOPILOT.md` in your project root to give RepoPilot persistent instru
 - Never modify files in migrations/
 ```
 
-Global memory lives at `~/.repopilot/REPOPILOT.md` and applies across projects.
+Global memory lives at `~/.repopilot/REPOPILOT.md` and applies across all projects.
+
+## Configuration
+
+Config file: `~/.repopilot/config.toml`
+
+```toml
+[core]
+model = "openai/doubao-seed-evolving"
+api_key = "sk-..."
+base_url = "https://ark.cn-beijing.volces.com/api/v3"
+sandbox_type = "local"
+approval_mode = "auto"
+max_steps = 200
+budget_tokens = 500000
+tool_timeout = 120
+```
+
+Manage config via CLI:
+
+```bash
+repopilot config show
+repopilot config set model openai/gpt-4o
+repopilot config init  # re-run setup wizard
+repopilot models       # list recommended models
+```
 
 ## Architecture
 
@@ -145,50 +188,36 @@ Global memory lives at `~/.repopilot/REPOPILOT.md` and applies across projects.
 └─────────────────────────────────┘
 ```
 
-## Evaluation
+## Built-in Tools
 
-- **434 unit tests** pass
-- **12/12 (100%) Success@1** on custom E2E benchmark (bug fix, new feature, multi-file, security, edge cases, regex, refactoring)
-- **8/8 memory tests** pass (fact recall, project/global memory, compaction, cross-session resume)
+| Tool | Description |
+|------|-------------|
+| `read_file` | Read a file (with optional line range and offset limit) |
+| `write_file` | Write content to a file (creates or overwrites) |
+| `edit_file` | Find-and-replace edit (string replacement) |
+| `grep_search` | Search file contents with regex |
+| `glob` | Find files by glob pattern |
+| `list_dir` | List directory contents |
+| `repo_tree` | Show tree-sitter generated repository map |
+| `bash` | Execute a shell command (sandboxed) |
+| `run_python` | Execute Python code in an isolated temp file |
+| `finish` | Signal task completion and return to user |
 
-Run tests:
-```bash
-python -m pytest tests/ -q
-python -m eval.run --tasks 1-12     # E2E benchmark
-```
+## Supported LLM Providers
 
-## Configuration
+Any OpenAI-compatible endpoint works out of the box via [LiteLLM](https://docs.litellm.ai/):
 
-Config file: `~/.repopilot/config.toml`
-
-```toml
-[core]
-model = "openai/doubao-seed-evolving"
-api_key = "sk-..."
-base_url = "https://ark.cn-beijing.volces.com/api/v3"
-sandbox_type = "local"
-approval_mode = "auto"
-max_steps = 200
-budget_tokens = 500000
-tool_timeout = 120
-```
-
-Manage config via CLI:
-```bash
-repopilot config show
-repopilot config set model openai/gpt-4o
-repopilot config init  # re-run setup wizard
-repopilot models       # list recommended models
-```
-
-## Requirements
-
-- Python 3.10+
-- (Optional) Docker Desktop for Docker sandbox
+- **Volcengine ARK (Doubao)** — recommended, tested extensively
+- **OpenAI** (GPT-4o, GPT-4, o1, etc.)
+- **DeepSeek** (deepseek-chat, deepseek-reasoner)
+- **Alibaba Qwen** (qwen2.5-coder series)
+- **Zhipu GLM** (glm-4, glm-5 series)
+- **Local models** via vLLM / Ollama / llama.cpp (any OpenAI-compatible server)
+- **Anthropic Claude** (via LiteLLM)
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.
 
 ## Acknowledgements
 

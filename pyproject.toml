@@ -5,10 +5,27 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "repopilot"
 version = "0.1.0"
-description = "Local-first code agent with Docker sandbox and SWE-bench harness"
+description = "Local-first AI code agent in your terminal. Inspired by Claude Code and Codex CLI."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
+keywords = ["ai", "code-agent", "cli", "coding-assistant", "llm", "developer-tools"]
+authors = [
+    {name = "ZhangYang2297"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = [
     "typer>=0.12",
     "rich>=13",
@@ -39,8 +56,14 @@ dev = [
 [project.scripts]
 repopilot = "repopilot.cli:app"
 
+[project.urls]
+Homepage = "https://github.com/ZhangYang2297/repopilot"
+Repository = "https://github.com/ZhangYang2297/repopilot"
+Issues = "https://github.com/ZhangYang2297/repopilot/issues"
+
 [tool.setuptools.packages.find]
 include = ["repopilot*"]
+exclude = ["tests*", "eval*", "docs*"]
 
 [tool.ruff]
 line-length = 100
@@ -48,7 +71,3 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-v --timeout=30"
