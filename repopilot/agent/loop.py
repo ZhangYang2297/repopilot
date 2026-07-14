@@ -61,16 +61,27 @@ class StreamEvent:
 StreamCallback = Callable[[StreamEvent], None]
 
 
-def _load_system_prompt() -> str:
-    """Load the system prompt from the prompts directory."""
+def _load_system_prompt(
+    sandbox_type: str = "local",
+    approval_mode: str = "confirm",
+    config_path: str = "",
+    global_memory_path: str = "",
+) -> str:
+    """Load the system prompt from the prompts directory and fill template variables."""
     import platform as _platform
+    from repopilot import __version__
     prompt_path = Path(__file__).parent / "prompts" / "system.md"
     if prompt_path.exists():
         text = prompt_path.read_text(encoding="utf-8")
         plat = _platform.system()  # "Windows", "Linux", "Darwin"
-        return text.replace("{platform}", plat)
+        text = text.replace("{platform}", plat)
+        text = text.replace("{version}", __version__)
+        text = text.replace("{sandbox_type}", sandbox_type)
+        text = text.replace("{approval_mode}", approval_mode)
+        text = text.replace("{config_path}", config_path or "~/.repopilot/config.toml")
+        text = text.replace("{global_memory_path}", global_memory_path or "~/.repopilot/REPOPILOT.md")
+        return text
     return "You are a helpful coding assistant."
-
 
 def _register_default_tools(registry: ToolRegistry) -> None:
     """Register all built-in tools."""
@@ -123,10 +134,26 @@ def run_agent(
 
     # ── Setup defaults ──────────────────────────
     if permission_engine is None:
-        permission_engine = PermissionEngine(mode="auto")
+        permission_engine = PermissionEngine(mode="confirm")
     if hooks is None:
         hooks = HookManager()
-    sys_prompt = system_prompt or _load_system_prompt()
+    # Determine runtime info for system prompt template
+    _sb_type = sandbox.__class__.__name__.replace("Sandbox", "").lower() or "local"
+    _approval = permission_engine.mode if permission_engine else "auto"
+    try:
+        from repopilot.config import get_settings
+        _s = get_settings()
+        _cfg_path = str(_s.config_file)
+        _gmem_path = str(_s.home_dir / "REPOPILOT.md")
+    except Exception:
+        _cfg_path = "~/.repopilot/config.toml"
+        _gmem_path = "~/.repopilot/REPOPILOT.md"
+    sys_prompt = system_prompt or _load_system_prompt(
+        sandbox_type=_sb_type,
+        approval_mode=_approval,
+        config_path=_cfg_path,
+        global_memory_path=_gmem_path,
+    )
 
     # ── Tool registry ───────────────────────────
     registry = ToolRegistry(permission_engine=permission_engine)
@@ -387,4 +414,8 @@ def run_agent(
         session_id=session.id if session else "",
         error=error_msg,
     )
+
+
+
+
 

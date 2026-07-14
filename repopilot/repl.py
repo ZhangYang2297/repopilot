@@ -89,7 +89,7 @@ class ReplSession:
             except Exception:
                 pass
 
-        system_prompt = _load_system_prompt()
+        system_prompt = _load_system_prompt(sandbox_type=self.sandbox_type, approval_mode=self.approval_mode, config_path=str(self.settings.config_file), global_memory_path=str(self.settings.home_dir / 'REPOPILOT.md'))
         create_global_memory(self.settings.home_dir)
         memory_str = load_memory(self.repo_path, home_dir=self.settings.home_dir)
         self.ctx = ContextManager(
@@ -521,4 +521,5 @@ def run_repl(
             console.print("\n[yellow]Interrupted.[/yellow]")
         except Exception as e:
             console.print(f"[red]Error: {type(e).__name__}: {e}[/red]")
+
 
