@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "repopilot"
+name = "repopilot-agent"
 version = "0.1.0"
 description = "Local-first AI code agent in your terminal. Inspired by Claude Code and Codex CLI."
 readme = "README.md"
@@ -70,4 +70,5 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
 

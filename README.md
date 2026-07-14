@@ -8,7 +8,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![PyPI version](https://img.shields.io/pypi/v/repopilot.svg)](https://pypi.org/project/repopilot/)
+[![PyPI version](https://img.shields.io/pypi/v/repopilot-agent.svg)](https://pypi.org/project/repopilot-agent/)
 
 </div>
 
@@ -57,7 +57,7 @@ repopilot> fix the failing test in test_auth.py
 ## Installation
 
 ```bash
-pip install repopilot
+pip install repopilot-agent
 ```
 
 Or install the latest version directly from GitHub:
@@ -69,7 +69,7 @@ pip install git+https://github.com/ZhangYang2297/repopilot.git
 For an isolated install (recommended for CLI tools):
 
 ```bash
-pipx install repopilot
+pipx install repopilot-agent
 ```
 
 **Requirements**: Python 3.10+
@@ -222,3 +222,5 @@ MIT — see [LICENSE](LICENSE) for details.
 ## Acknowledgements
 
 Built after studying Claude Code (Anthropic), Codex CLI (OpenAI), and the SWE-bench / SWE-agent research.
+
+

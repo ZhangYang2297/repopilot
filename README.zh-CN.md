@@ -8,7 +8,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![PyPI version](https://img.shields.io/pypi/v/repopilot.svg)](https://pypi.org/project/repopilot/)
+[![PyPI version](https://img.shields.io/pypi/v/repopilot-agent.svg)](https://pypi.org/project/repopilot-agent/)
 
 </div>
 
@@ -57,7 +57,7 @@ repopilot> 修复 test_auth.py 中失败的测试
 ## 安装
 
 ```bash
-pip install repopilot
+pip install repopilot-agent
 ```
 
 或直接从 GitHub 安装最新版：
@@ -69,7 +69,7 @@ pip install git+https://github.com/ZhangYang2297/repopilot.git
 推荐使用 `pipx` 做隔离安装（不污染全局 Python 环境）：
 
 ```bash
-pipx install repopilot
+pipx install repopilot-agent
 ```
 
 **环境要求**：Python 3.10+
@@ -222,3 +222,5 @@ MIT 协议 — 详见 [LICENSE](LICENSE)。
 ## 致谢
 
 本项目在研究 Claude Code（Anthropic）、Codex CLI（OpenAI）以及 SWE-bench / SWE-agent 论文的基础上构建。
+
+
