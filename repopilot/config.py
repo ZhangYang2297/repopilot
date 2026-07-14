@@ -32,7 +32,7 @@ class Settings:
     base_url: str = ""                       # Custom base URL (for ARK/DashScope/vLLM/local)
 
     # Sandbox
-    sandbox_type: str = "docker"             # docker | local
+    sandbox_type: str = "local"             # docker | local
     docker_image: str = "repopilot-sandbox:py310"
     docker_cpu_quota: int = 200000           # cgroup cpu_quota (2 CPUs when period=100000)
     docker_mem_limit: str = "2g"
@@ -40,7 +40,7 @@ class Settings:
     local_cwd: str = ""
 
     # Permission
-    approval_mode: str = "confirm"           # auto | confirm | edit-only | deny
+    approval_mode: str = "auto"           # auto | confirm | edit-only | deny
 
     # Agent
     max_steps: int = 200
@@ -233,3 +233,4 @@ def get_settings() -> Settings:
 def reset_settings_for_tests() -> None:
     global _settings
     _settings = None
+
