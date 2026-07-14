@@ -88,7 +88,12 @@ def _main(ctx: typer.Context,
           sandbox: str = typer.Option("", "--sandbox", help="docker or local (default: from config)"),
           approval_mode: str = typer.Option("", "--approval-mode", help="auto|confirm|edit-only|deny (default: from config)"),
           model: str = typer.Option("", "--model", "-m", help="Override model"),
-          verbose: bool = typer.Option(False, "--verbose", "-v")):
+          verbose: bool = typer.Option(False, "--verbose", "-v"),
+          version: bool = typer.Option(False, "--version", help="Show version and exit")):
+    if version:
+        from repopilot import __version__
+        console.print(f"repopilot {__version__}")
+        raise typer.Exit()
     if ctx.invoked_subcommand is None:
         _ensure_configured()
         import os
@@ -395,6 +400,8 @@ def config_init() -> None:
 
 if __name__ == "__main__":
     app()
+
+
 
 
 

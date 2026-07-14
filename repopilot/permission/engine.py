@@ -168,7 +168,7 @@ class PermissionEngine:
         if _re.search(r"\s/(etc|root|proc|sys|boot|bin|sbin)/\S+", cmd):
             return "Command accesses system directory"
         # Parent directory traversal out of workspace
-        if _re.search(r"cat\s+\.\./", cmd) or _re.search(r">\s+\.\./", cmd):
+        if _re.search(r"(?:cat|type|more|less|head|tail|cat|open|read)\s+\.\.[/\\]", cmd) or _re.search(r"[><>]\s*\.\.[/\\]", cmd):
             return "Command references path outside workspace (../)"
         return None
 
@@ -199,3 +199,5 @@ class PermissionEngine:
     def _truncate(s: str, n: int) -> str:
         s = s.replace("\n", " ")
         return s[:n] + ("..." if len(s) > n else "")
+
+
