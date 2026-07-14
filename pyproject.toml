@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Local-first AI code agent in your terminal. Inspired by Claude Code and Codex CLI."
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
 keywords = ["ai", "code-agent", "cli", "coding-assistant", "llm", "developer-tools"]
 authors = [
     {name = "ZhangYang2297"},
@@ -17,7 +17,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -71,3 +70,4 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
