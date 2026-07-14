@@ -45,7 +45,7 @@ repopilot> 修复 test_auth.py 中失败的测试
 - **分层记忆系统** — 全局 + 项目级 `REPOPILOT.md`（类似 CLAUDE.md）
 - **跨会话恢复** — `/resume` 一键回到上次对话状态
 - **Docker 沙箱** — 支持 CPU/内存限制、网络隔离
-- **4 种审批模式**：auto（自动）/ confirm（确认）/ edit-only（仅编辑需确认）/ deny（全部拒绝）
+- **4 种审批模式**：auto（自动）/ confirm（确认）/ edit-only（仅编辑需确认）/ deny（全部拒绝）（默认 confirm）
 - **危险命令黑名单** — 路径穿越检测、`rm -rf /`、`curl|sh`、强制推送、凭据窃取等一律拦截
 - **10 个内置工具**：读/写/编辑/grep/glob/列目录/执行 bash/运行 Python/仓库树/结束任务
 - **tree-sitter 代码地图** — 无需逐个打开文件即可看到代码结构
@@ -96,10 +96,10 @@ export REPOPILOT_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 
 ```bash
 cd your-project
-repopilot                          # 当前目录，本地沙箱，自动审批
+repopilot                          # 当前目录，本地沙箱，写入/执行需确认
 repopilot -r ../other-proj         # 指定其他项目目录
 repopilot --sandbox docker         # 在 Docker 容器中运行
-repopilot --approval-mode confirm  # 写入/执行前确认
+repopilot --approval-mode auto     # 自动审批（完全信任 agent）
 repopilot -m openai/gpt-4o         # 切换模型
 ```
 
@@ -222,5 +222,6 @@ MIT 协议 — 详见 [LICENSE](LICENSE)。
 ## 致谢
 
 本项目在研究 Claude Code（Anthropic）、Codex CLI（OpenAI）以及 SWE-bench / SWE-agent 论文的基础上构建。
+
 
 

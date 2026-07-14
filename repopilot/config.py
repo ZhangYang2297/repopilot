@@ -40,7 +40,7 @@ class Settings:
     local_cwd: str = ""
 
     # Permission
-    approval_mode: str = "auto"           # auto | confirm | edit-only | deny
+    approval_mode: str = "confirm"        # auto | confirm | edit-only | deny
 
     # Agent
     max_steps: int = 200
@@ -233,4 +233,5 @@ def get_settings() -> Settings:
 def reset_settings_for_tests() -> None:
     global _settings
     _settings = None
+
 

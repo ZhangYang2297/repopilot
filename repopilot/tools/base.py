@@ -20,6 +20,20 @@ class AgentFinished(Exception):
         super().__init__(summary)
 
 
+class ApprovalRequired(Exception):
+    """Raised by ToolRegistry when a tool call needs user confirmation.
+
+    The REPL catches this, prompts the user, and either:
+      - allows the call (optionally remembering "always allow" for this tool+args),
+      - or denies it and returns an error to the agent.
+    """
+    def __init__(self, tool_name: str, args: dict[str, Any], reason: str):
+        self.tool_name = tool_name
+        self.args = args
+        self.reason = reason
+        super().__init__(f"Approval required for {tool_name}: {reason}")
+
+
 # Tool tiers: controls permission / auto-approval behaviour
 TIER_READONLY = 0   # grep/glob/read/list/tree — never needs approval
 TIER_WRITE = 1      # write_file/edit_file — ask in confirm/edit-only

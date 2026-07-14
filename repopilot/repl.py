@@ -8,7 +8,7 @@ from typing import Optional
 
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.prompt import Prompt
+from rich.prompt import Prompt, Confirm
 
 from repopilot.config import get_settings, reset_settings_for_tests, Settings
 from repopilot.llm.service import build_llm_from_settings, LLMService, Tier
@@ -22,6 +22,7 @@ from repopilot.agent.context import ContextManager
 from repopilot.agent.parser import parse_response
 from repopilot.agent.loop import _load_system_prompt, _register_default_tools
 from repopilot.agent.compact import tool_compact
+from repopilot.tools.base import ApprovalRequired
 from repopilot.memory import load_memory, create_global_memory, append_to_project_memory, append_to_global_memory
 
 HELP_TEXT = """
@@ -520,3 +521,4 @@ def run_repl(
             console.print("\n[yellow]Interrupted.[/yellow]")
         except Exception as e:
             console.print(f"[red]Error: {type(e).__name__}: {e}[/red]")
+

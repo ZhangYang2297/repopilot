@@ -85,8 +85,8 @@ def _ensure_configured() -> None:
 @app.callback(invoke_without_command=True)
 def _main(ctx: typer.Context,
           repo: str = typer.Option(".", "--repo", "-r", help="Path to target repo"),
-          sandbox: str = typer.Option("local", "--sandbox", help="docker or local"),
-          approval_mode: str = typer.Option("auto", "--approval-mode", help="auto|confirm|edit-only|deny"),
+          sandbox: str = typer.Option("", "--sandbox", help="docker or local (default: from config)"),
+          approval_mode: str = typer.Option("", "--approval-mode", help="auto|confirm|edit-only|deny (default: from config)"),
           model: str = typer.Option("", "--model", "-m", help="Override model"),
           verbose: bool = typer.Option(False, "--verbose", "-v")):
     if ctx.invoked_subcommand is None:
@@ -95,8 +95,8 @@ def _main(ctx: typer.Context,
         repo_path = Path(repo).resolve()
         run_repl(
             repo_path=repo_path,
-            approval_mode=approval_mode,
-            sandbox_type=sandbox,
+            approval_mode=approval_mode or get_settings().approval_mode,
+            sandbox_type=sandbox or get_settings().sandbox_type,
             model_override=model,
             verbose=verbose,
         )
@@ -153,10 +153,10 @@ def chat(
     task: str = typer.Argument(..., help="Task to perform"),
     repo: str = typer.Option(".", "--repo", "-r", help="Path to target repo"),
     model: str = typer.Option("", "--model", "-m", help="Override model"),
-    sandbox: str = typer.Option("local", "--sandbox", help="docker or local"),
-    approval_mode: str = typer.Option(
-        "auto", "--approval-mode", help="auto|confirm|edit-only|deny"
-    ),
+    sandbox: str = typer.Option("", "--sandbox", help="docker or local (default: from config)"),
+      approval_mode: str = typer.Option(
+          "", "--approval-mode", help="auto|confirm|edit-only|deny (default: from config)"
+      ),
     max_steps: int = typer.Option(50, "--max-steps", help="Max agent steps"),
     budget_tokens: int = typer.Option(200_000, "--budget-tokens", help="Input token budget"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
@@ -183,6 +183,7 @@ def chat(
     s = _gs()
     chosen_model = model or s.model
     sandbox_type = sandbox or s.sandbox_type
+    approval_mode = approval_mode or s.approval_mode
     repo_path = Path(repo).resolve()
 
     if not repo_path.exists():
@@ -394,3 +395,10 @@ def config_init() -> None:
 
 if __name__ == "__main__":
     app()
+
+
+
+
+
+
+

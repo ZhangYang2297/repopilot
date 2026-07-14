@@ -3,7 +3,7 @@ through the permission engine."""
 from __future__ import annotations
 from typing import Any, TYPE_CHECKING
 
-from repopilot.tools.base import Tool, TIER_READONLY, AgentFinished
+from repopilot.tools.base import Tool, TIER_READONLY, AgentFinished, ApprovalRequired
 from repopilot.tools.result import ToolResult
 
 if TYPE_CHECKING:
@@ -25,9 +25,11 @@ class ToolRegistry:
       - Route the call to the correct Tool.execute() with the active Sandbox.
     """
 
-    def __init__(self, permission_engine: "PermissionEngine | None" = None):
+    def __init__(self, permission_engine: "PermissionEngine | None" = None,
+                 approval_callback: Any = None):
         self._tools: dict[str, Tool] = {}
         self._permission = permission_engine
+        self._approval_callback = approval_callback
 
     # ── registration ──────────────────────────────────────────
     def register(self, tool: Tool) -> None:
@@ -55,6 +57,10 @@ class ToolRegistry:
     def set_permission_engine(self, pe: "PermissionEngine") -> None:
         self._permission = pe
 
+    def set_approval_callback(self, cb) -> None:
+        """Set a callable(tool_name, args, reason) -> bool that decides approval."""
+        self._approval_callback = cb
+
     # ── LLM schemas ───────────────────────────────────────────
     def schemas(self) -> list[dict[str, Any]]:
         """Return OpenAI-compatible function schemas for all registered tools."""
@@ -74,6 +80,12 @@ class ToolRegistry:
             ToolResult with content or error.  On permission denied the
             result has ``error`` set to the denial reason so the LLM can
             see why the call was rejected.
+
+        Raises:
+            ApprovalRequired: when the permission engine returns "ask" and
+                no approval_callback is set (or the callback is handled by
+                the REPL which will re-dispatch after prompting).
+            AgentFinished: from the finish tool.
         """
         try:
             tool = self.get(name)
@@ -86,11 +98,15 @@ class ToolRegistry:
             if decision.action == "deny":
                 return ToolResult(error=f"Permission denied: {decision.reason}")
             if decision.action == "ask":
-                return ToolResult(
-                    error=f"[Approval Required] Tool '{name}' needs confirmation: {decision.reason}. "
-                          f"The agent loop will prompt the user. For now, this call is blocked; "
-                          f"use --approval-mode auto to bypass or approve in the interactive prompt."
-                )
+                # If an approval callback is set (non-interactive mode, e.g. chat cmd),
+                # use it; otherwise raise to let the REPL handle interactive prompt.
+                if self._approval_callback is not None:
+                    approved = self._approval_callback(name, args or {}, decision.reason)
+                    if not approved:
+                        return ToolResult(error=f"User denied: {decision.reason}")
+                    # User approved — proceed to execute
+                else:
+                    raise ApprovalRequired(name, args or {}, decision.reason)
             # action == "allow" → proceed
 
         # Actual execution
@@ -101,4 +117,3 @@ class ToolRegistry:
         except Exception as exc:
             result = ToolResult(error=f"{type(exc).__name__}: {exc}")
         return result
-

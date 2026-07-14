@@ -45,7 +45,7 @@ repopilot> fix the failing test in test_auth.py
 - **Layered memory system** — global + project `REPOPILOT.md` files (like CLAUDE.md)
 - **Cross-session resume** — `/resume` to continue where you left off
 - **Docker sandbox** with CPU/memory limits and optional network isolation
-- **4 approval modes**: auto / confirm / edit-only / deny
+- **4 approval modes**: auto / confirm / edit-only / deny (default: confirm — you approve writes/executions)
 - **Dangerous command blacklist** (path traversal, `rm -rf /`, `curl|sh`, force push, credential theft)
 - **10 built-in tools**: read/write/edit/grep/glob/list_dir/bash/run_python/repo_tree/finish
 - **tree-sitter repo map** — code structure overview without reading every file
@@ -96,10 +96,10 @@ export REPOPILOT_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 
 ```bash
 cd your-project
-repopilot                          # current directory, local sandbox, auto approval
+repopilot                          # current directory, local sandbox, confirm approval
 repopilot -r ../other-proj         # specify a different project directory
 repopilot --sandbox docker         # run inside a Docker container
-repopilot --approval-mode confirm  # confirm before writes/executions
+repopilot --approval-mode auto     # skip confirmations (trust the agent)
 repopilot -m openai/gpt-4o         # override model
 ```
 
@@ -222,5 +222,6 @@ MIT — see [LICENSE](LICENSE) for details.
 ## Acknowledgements
 
 Built after studying Claude Code (Anthropic), Codex CLI (OpenAI), and the SWE-bench / SWE-agent research.
+
 
 

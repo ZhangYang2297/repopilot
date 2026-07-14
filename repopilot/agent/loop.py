@@ -30,7 +30,7 @@ from repopilot.llm.service import LLMService, Tier
 from repopilot.permission.engine import PermissionEngine
 from repopilot.sandbox.base import Sandbox
 from repopilot.session.store import SessionStore, Session
-from repopilot.tools.base import AgentFinished, Tool
+from repopilot.tools.base import AgentFinished, ApprovalRequired, Tool
 from repopilot.tools.registry import ToolRegistry
 from repopilot.tools.result import ToolResult
 from repopilot.memory import load_memory as _load_memory
@@ -284,6 +284,8 @@ def run_agent(
                         # ── Execute tool ──────
                         try:
                             tool_result = registry.execute(tool_name, tool_args, sandbox)
+                        except ApprovalRequired as ar:
+                            tool_result = ToolResult(error=f"Approval required for {ar.tool_name}: {ar.reason}. Use --approval-mode auto.")
                         except AgentFinished as af:
                             # Finish tool raised AgentFinished
                             summary = af.summary
@@ -385,3 +387,4 @@ def run_agent(
         session_id=session.id if session else "",
         error=error_msg,
     )
+
