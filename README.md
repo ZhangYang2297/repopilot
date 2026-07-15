@@ -74,6 +74,9 @@ pipx install repopilot-agent
 
 **Requirements**: Python 3.10+
 
+> **Windows note**: if pip install fails with "Cargo, the Rust package manager, is not installed",
+> run pip install repopilot-agent --only-binary :all: to force pre-built wheels, or use pipx.
+
 ### First Run
 
 On first run you will be prompted for your LLM configuration:

@@ -74,6 +74,10 @@ pipx install repopilot-agent
 
 **环境要求**：Python 3.10+
 
+> **Windows 用户注意**：如果 pip install 报错 "Cargo, the Rust package manager, is not installed"，
+> 这是 litellm 依赖的 tiktoken 在某些 Python 版本上没有预编译 wheel 导致的。
+> 解决方法：pip install repopilot-agent --only-binary :all: 强制使用预编译包，或使用 pipx 安装。
+
 ### 首次运行
 
 首次运行会引导你配置 LLM：
