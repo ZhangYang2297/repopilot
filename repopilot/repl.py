@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.prompt import Prompt, Confirm
+from rich.syntax import Syntax
 
 from repopilot.config import get_settings, reset_settings_for_tests, Settings
 from repopilot.llm.service import build_llm_from_settings, LLMService, Tier
@@ -22,7 +25,9 @@ from repopilot.agent.context import ContextManager
 from repopilot.agent.parser import parse_response
 from repopilot.agent.loop import _load_system_prompt, _register_default_tools
 from repopilot.agent.compact import tool_compact
+from repopilot.agent.diff_tracker import DiffTracker
 from repopilot.tools.base import ApprovalRequired
+from repopilot.tools.result import ToolResult
 from repopilot.memory import load_memory, create_global_memory, append_to_project_memory, append_to_global_memory
 
 HELP_TEXT = """
@@ -42,7 +47,13 @@ HELP_TEXT = """
 | `/sessions` | List recent sessions |
 | `/cost` | Show token usage and cost |
 | `/status` | Show current configuration |
+| `/diff` | Show file changes made during this session |
+| `/undo` | Revert the last file change |
 """
+
+
+# Tools whose writes we should snapshot for /diff and /undo.
+_WRITE_TOOLS = {"write_file", "edit_file"}
 
 
 class ReplSession:
@@ -59,8 +70,10 @@ class ReplSession:
         self.console = console
         self.verbose = verbose
         self.steps = 0
+        self.diff_tracker = DiffTracker(str(repo_path))
         self.total_tokens = 0
         self.cost_tracker = CostTracker()
+        self._streamed_answer = False
         self._build_context()
 
     def _make_permission_engine(self) -> PermissionEngine:
@@ -89,7 +102,12 @@ class ReplSession:
             except Exception:
                 pass
 
-        system_prompt = _load_system_prompt(sandbox_type=self.sandbox_type, approval_mode=self.approval_mode, config_path=str(self.settings.config_file), global_memory_path=str(self.settings.home_dir / 'REPOPILOT.md'))
+        system_prompt = _load_system_prompt(
+            sandbox_type=self.sandbox_type,
+            approval_mode=self.approval_mode,
+            config_path=str(self.settings.config_file),
+            global_memory_path=str(self.settings.home_dir / "REPOPILOT.md"),
+        )
         create_global_memory(self.settings.home_dir)
         memory_str = load_memory(self.repo_path, home_dir=self.settings.home_dir)
         self.ctx = ContextManager(
@@ -106,6 +124,113 @@ class ReplSession:
         self.hooks = HookManager()
         install_builtin_hooks(self.hooks, cost_tracker=self.cost_tracker)
 
+    # ── file change tracking helpers ─────────────────────────
+    def _snapshot_before(self, tool_name: str, tool_args: dict):
+        if tool_name not in _WRITE_TOOLS:
+            return (None, False)
+        rel = tool_args.get("path", "") or ""
+        if not rel:
+            return (None, False)
+        fpath = (self.repo_path / rel).resolve()
+        try:
+            fpath.relative_to(self.repo_path.resolve())
+        except ValueError:
+            return (None, False)
+        if fpath.exists() and fpath.is_file():
+            try:
+                return (fpath.read_text(encoding="utf-8", errors="replace"), True)
+            except Exception:
+                return (None, True)
+        return (None, False)
+
+    def _record_tool_change(self, tool_name, tool_args, result, before_content, existed_before) -> None:
+        if tool_name not in _WRITE_TOOLS:
+            return
+        if getattr(result, "error", None):
+            return
+        rel = tool_args.get("path", "") or ""
+        if not rel:
+            return
+        fpath = (self.repo_path / rel).resolve()
+        try:
+            after = fpath.read_text(encoding="utf-8", errors="replace") if fpath.exists() else ""
+        except Exception:
+            after = ""
+        if tool_name == "write_file":
+            if existed_before:
+                self.diff_tracker.record_overwrite(rel, before_content or "", after)
+            else:
+                self.diff_tracker.record_new(rel, after)
+        else:
+            self.diff_tracker.record_edit(rel, before_content or "", after)
+
+    # ── interactive approval ─────────────────────────────────
+    def _interactive_approve(self, tool_name: str, args: dict, reason: str) -> bool:
+        summary = self._summarize_call(tool_name, args)
+        self.console.print(f"\n[yellow]Approval required[/yellow] [dim]({reason})[/dim]")
+        self.console.print(f"  [cyan]{tool_name}[/cyan]  [dim]{summary}[/dim]")
+        try:
+            choice = Prompt.ask(
+                "[bold]Allow?[/bold] [green]y[/green]=yes  [red]n[/red]=no  [yellow]a[/yellow]=always allow  [magenta]d[/magenta]=deny mode",
+                choices=["y", "n", "a", "d"],
+                default="n",
+                show_choices=False,
+            )
+        except (KeyboardInterrupt, EOFError):
+            return False
+        choice = (choice or "n").lower()
+        pe = self.registry._permission
+        if choice == "y":
+            return True
+        if choice == "a":
+            if pe is not None:
+                pe.remember_always(tool_name, args)
+            return True
+        if choice == "d":
+            self.approval_mode = "deny"
+            if pe is not None:
+                pe.mode = "deny"
+            self.console.print("[magenta]Switched to deny mode.[/magenta]")
+            return False
+        return False
+
+    @staticmethod
+    def _summarize_call(tool_name: str, args: dict) -> str:
+        parts = []
+        for k in ("path", "command", "old_string", "content"):
+            if k in args and args[k] is not None:
+                v = str(args[k]).replace("\n", " ")
+                parts.append(f"{k}={v[:60]}{'...' if len(v) > 60 else ''}")
+                if k in ("path", "command"):
+                    break
+        return " ".join(parts)
+
+    # ── slash commands ───────────────────────────────────────
+    def do_diff(self) -> None:
+        diffs = self.diff_tracker.get_diffs()
+        if not diffs:
+            self.console.print("[dim]No file changes recorded in this session.[/dim]")
+            return
+        files = self.diff_tracker.get_changed_files()
+        self.console.print(f"[bold]Changed files ({len(files)}):[/bold] " + ", ".join(f"[cyan]{p}[/cyan]" for p in files))
+        for d in diffs:
+            if not d.strip():
+                continue
+            try:
+                self.console.print(Syntax(d, "diff", theme="ansi_dark", line_numbers=False))
+            except Exception:
+                self.console.print(d)
+
+    def do_undo(self) -> None:
+        if not self.diff_tracker.changes:
+            self.console.print("[dim]Nothing to undo.[/dim]")
+            return
+        path = self.diff_tracker.undo_last()
+        if path:
+            self.console.print(f"[green]Reverted:[/green] [cyan]{path}[/cyan]")
+        else:
+            self.console.print("[dim]Nothing to undo.[/dim]")
+
     def run_turn(self, user_message: str) -> bool:
         self.ctx.add_user(user_message)
         if self.session_store:
@@ -113,6 +238,7 @@ class ReplSession:
 
         interrupt = False
         final_answer = ""
+        self._streamed_answer = False
 
         with self._make_sandbox() as sb:
             turn_steps = 0
@@ -135,28 +261,44 @@ class ReplSession:
                 tool_calls_raw = None
                 usage = {}
 
-                try:
-                    with self.console.status("[dim]Thinking...[/dim]", spinner="dots"):
-                        resp = self.llm.chat(
-                            messages=messages,
-                            tools=self.tool_schemas,
-                            tier=Tier.DEFAULT,
-                            temperature=0.2,
-                        )
-                    response_text = resp.content or ""
-                    tool_calls_raw = resp.tool_calls
-                    usage = resp.usage or {}
-                    self.total_tokens += usage.get("total_tokens", 0)
-                    self.cost_tracker.on_llm_call(usage, resp.model)
-                except KeyboardInterrupt:
-                    self.console.print("[yellow]Interrupted.[/yellow]")
-                    interrupt = True
-                    break
-                except Exception as e:
-                    self.console.print(f"[red]LLM error: {e}[/red]")
-                    if self.session_store:
-                        self.session_store.append_event(self.session_id, "error", {"error": str(e)})
-                    break
+                use_stream = hasattr(self.llm, "chat_stream") and callable(getattr(self.llm, "chat_stream", None))
+                streamed_ok = False
+                if use_stream:
+                    try:
+                        response_text, tool_calls_raw, usage = self._stream_llm(messages)
+                        streamed_ok = True
+                    except KeyboardInterrupt:
+                        self.console.print("[yellow]Interrupted.[/yellow]")
+                        interrupt = True
+                        break
+                    except Exception:
+                        streamed_ok = False
+                if not streamed_ok:
+                    try:
+                        with self.console.status("[dim]Thinking...[/dim]", spinner="dots"):
+                            resp = self.llm.chat(
+                                messages=messages,
+                                tools=self.tool_schemas,
+                                tier=Tier.DEFAULT,
+                                temperature=0.2,
+                            )
+                        response_text = resp.content or ""
+                        tool_calls_raw = resp.tool_calls
+                        usage = resp.usage or {}
+                    except KeyboardInterrupt:
+                        self.console.print("[yellow]Interrupted.[/yellow]")
+                        interrupt = True
+                        break
+                    except Exception as e:
+                        self.console.print(f"[red]LLM error: {e}[/red]")
+                        if self.session_store:
+                            self.session_store.append_event(self.session_id, "error", {"error": str(e)})
+                        break
+
+                self.total_tokens += (usage.get("total_tokens", 0) if usage else 0)
+                if usage:
+                    model_name = getattr(self.llm, "models", {}).get(Tier.DEFAULT, "")
+                    self.cost_tracker.on_llm_call(usage, model_name)
 
                 parsed = parse_response(content=response_text, tool_calls=tool_calls_raw)
 
@@ -192,22 +334,41 @@ class ReplSession:
                             self.ctx.add_assistant(final_answer)
                             return True
 
-                        arg_str = ", ".join(f"{k}={str(v)[:40]}" for k, v in tool_args.items())
-                        self.console.print(f"[dim]> {tool_name}({arg_str})[/dim]")
+                        arg_str = ", ".join(f"[dim]{k}=[/dim]{str(v)[:40]}" for k, v in tool_args.items())
+                        self.console.print(f"[cyan]> {tool_name}[/cyan]([dim]{arg_str}[/dim])")
 
                         if self.session_store:
                             self.session_store.append_event(self.session_id, "tool_call", {
                                 "tool": tool_name, "args": tool_args, "call_id": call_id,
                             })
 
+                        before_content, existed_before = self._snapshot_before(tool_name, tool_args)
+
+                        tool_result = None
+                        t0 = time.perf_counter()
                         try:
                             tool_result = self.registry.execute(tool_name, tool_args, sb)
+                        except ApprovalRequired as ar:
+                            allowed = self._interactive_approve(ar.tool_name, ar.args, ar.reason)
+                            if allowed:
+                                self.registry.set_approval_callback(lambda *_a, **_k: True)
+                                try:
+                                    tool_result = self.registry.execute(tool_name, tool_args, sb)
+                                finally:
+                                    self.registry.set_approval_callback(None)
+                            else:
+                                tool_result = ToolResult(error=f"User denied: {ar.reason}")
                         except KeyboardInterrupt:
                             interrupt = True
-                            break
+                            tool_result = ToolResult(error="Interrupted by user")
                         except Exception as e:
-                            from repopilot.tools.result import ToolResult
                             tool_result = ToolResult(error=f"{type(e).__name__}: {e}")
+                        elapsed = time.perf_counter() - t0
+
+                        if tool_result and not tool_result.error:
+                            self._record_tool_change(
+                                tool_name, tool_args, tool_result, before_content, existed_before
+                            )
 
                         result_str = tool_result.content if not tool_result.error else f"Error: {tool_result.error}"
                         result_str = tool_compact(result_str)
@@ -217,11 +378,14 @@ class ReplSession:
                                 "tool": tool_name, "call_id": call_id,
                                 "content": tool_result.content if not tool_result.error else "",
                                 "error": tool_result.error or "",
+                                "duration_ms": int(elapsed * 1000),
                             })
 
                         is_error = bool(tool_result.error)
                         self.ctx.add_tool_result(call_id, result_str, is_error=is_error)
 
+                        status_icon = "[red]x[/red]" if is_error else "[green]OK[/green]"
+                        self.console.print(f"  {status_icon} [dim]{tool_name} ({elapsed:.1f}s)[/dim]")
                         if is_error:
                             self.console.print(f"[red]  {result_str[:200]}[/red]")
                         elif self.verbose:
@@ -236,16 +400,75 @@ class ReplSession:
                     self.ctx.add_assistant(final_answer)
                 break
 
-        self.console.print()
-        if final_answer:
+        if final_answer and not self._streamed_answer:
+            self.console.print()
             try:
                 self.console.print(Markdown(final_answer))
             except Exception:
                 self.console.print(final_answer)
+        self._streamed_answer = False
         self.console.print()
         if interrupt:
             self.console.print("[yellow]Task interrupted.[/yellow]")
         return not interrupt
+
+    def _stream_llm(self, messages: list):
+        accumulated = ""
+        tool_calls = []
+        usage = {}
+        got_tool_delta = False
+        live = None
+        self._streamed_answer = False
+        try:
+            gen = self.llm.chat_stream(
+                messages=messages,
+                tools=self.tool_schemas,
+                tier=Tier.DEFAULT,
+                temperature=0.2,
+            )
+            for event in gen:
+                etype = event.get("type") if isinstance(event, dict) else None
+                if etype == "text_delta":
+                    accumulated += event.get("content", "")
+                    if not got_tool_delta:
+                        if live is None:
+                            try:
+                                live = Live(Markdown(accumulated),
+                                            console=self.console,
+                                            refresh_per_second=10,
+                                            transient=False)
+                                live.__enter__()
+                                self._streamed_answer = True
+                            except Exception:
+                                live = None
+                        else:
+                            try:
+                                live.update(Markdown(accumulated))
+                            except Exception:
+                                pass
+                elif etype == "tool_call":
+                    got_tool_delta = True
+                    tool_calls.append({
+                        "id": event.get("id", ""),
+                        "name": event.get("name", ""),
+                        "arguments": event.get("arguments", {}),
+                    })
+                elif etype == "done":
+                    resp = event.get("response")
+                    if resp is not None:
+                        usage = getattr(resp, "usage", {}) or {}
+                        if not accumulated:
+                            accumulated = getattr(resp, "content", "") or ""
+                    break
+        finally:
+            if live is not None:
+                try:
+                    live.__exit__(None, None, None)
+                except Exception:
+                    pass
+        if tool_calls:
+            self._streamed_answer = False
+        return accumulated, (tool_calls if tool_calls else None), usage
 
     def do_compact(self) -> None:
         try:
@@ -258,6 +481,7 @@ class ReplSession:
     def do_clear(self) -> None:
         self._build_context()
         self.steps = 0
+        self.diff_tracker = DiffTracker(str(self.repo_path))
         self.total_tokens = 0
         self.cost_tracker = CostTracker()
 
@@ -322,7 +546,6 @@ def run_repl(
         console=console, verbose=verbose,
     )
 
-    import queue
     _stdin_lines: list[str] = []
     if not sys.stdin.isatty():
         try:
@@ -371,19 +594,17 @@ def run_repl(
                         settings.model = arg
                         settings.fast_model = arg
                         settings.strong_model = arg
-                        try:
-                            new_llm = build_llm_from_settings(settings)
-                            repl.llm = new_llm
-                            console.print(f"[green]Model -> {arg}[/green]")
-                        except Exception as e:
-                            console.print(f"[red]Failed to switch model: {e}[/red]")
+                        reset_settings_for_tests()
+                        settings = get_settings()
+                        repl.llm = build_llm_from_settings(settings)
+                        console.print(f"[green]Model -> {arg}[/green]")
                 else:
                     console.print(f"Model: [cyan]{settings.model}[/cyan]")
             elif cmd == "/approval":
                 valid = ("auto", "confirm", "edit-only", "deny")
                 if arg in valid:
                     repl.approval_mode = arg
-                    repl.registry.set_permission_engine(repl._make_permission_engine())
+                    repl.registry._permission.mode = arg
                     console.print(f"[green]Approval -> {arg}[/green]")
                 else:
                     console.print(f"Approval: [cyan]{repl.approval_mode}[/cyan]  (valid: {', '.join(valid)})")
@@ -391,62 +612,61 @@ def run_repl(
                 repl.do_compact()
             elif cmd == "/clear":
                 repl.do_clear()
-                session = session_store.create(title=f"REPL: {repo_path.name}", cwd=str(repo_path), model=settings.model)
-                repl.session_id = session.id
-                console.print("[green]Conversation cleared.[/green]")
+                console.print("[green]Fresh conversation started.[/green]")
             elif cmd == "/cd":
-                if not arg:
-                    console.print(f"Directory: [cyan]{repo_path}[/cyan]")
-                else:
-                    new_path = (repo_path / arg).resolve() if not Path(arg).is_absolute() else Path(arg).resolve()
-                    if not new_path.exists() or not new_path.is_dir():
-                        console.print(f"[red]Not a directory: {new_path}[/red]")
-                    else:
-                        repo_path = new_path
-                        repl.repo_path = new_path
-                        repl.do_clear()
-                        session = session_store.create(title=f"REPL: {repo_path.name}", cwd=str(repo_path), model=settings.model)
+                if arg:
+                    p = Path(arg).expanduser().resolve()
+                    if p.exists() and p.is_dir():
+                        repl.repo_path = p
+                        repl.diff_tracker = DiffTracker(str(p))
+                        repl._build_context()
+                        console.print(f"[green]cd -> {p}[/green]")
+                        session = session_store.create(title=f"REPL: {p.name}", cwd=str(p), model=settings.model)
                         repl.session_id = session.id
-                        console.print(f"[green]Directory -> {new_path}[/green]")
+                    else:
+                        console.print(f"[red]Not a directory: {p}[/red]")
+                else:
+                    console.print(f"cwd: [cyan]{repl.repo_path}[/cyan]")
+            elif cmd == "/diff":
+                repl.do_diff()
+            elif cmd == "/undo":
+                repl.do_undo()
             elif cmd == "/cost":
                 ct = repl.cost_tracker
-                lines = [f"Steps: {repl.steps}  Tokens: {repl.total_tokens:,}  Cost: ${ct.total_cost_usd:.4f}"]
-                if ct._per_model:
-                    for mname, info in ct._per_model.items():
-                        lines.append(f"  {mname}: {info['prompt']+info['completion']:,} tokens, ${info['cost']:.4f}")
-                console.print("\n".join(lines))
+                console.print(f"Tokens: {ct.total_input_tokens}in + {ct.total_output_tokens}out")
+                console.print(f"Cost:   ${ct.total_cost:.4f}")
+                console.print(f"Calls:  {ct.llm_calls} LLM / {ct.tool_calls} tools")
             elif cmd == "/status":
-                console.print(f"  Directory: [cyan]{repo_path}[/cyan]")
+                console.print(f"  Directory: [cyan]{repl.repo_path}[/cyan]")
                 console.print(f"  Model:     [cyan]{settings.model}[/cyan]")
-                console.print(f"  Sandbox:   [cyan]{sandbox_type}[/cyan]")
+                console.print(f"  Sandbox:   [cyan]{repl.sandbox_type}[/cyan]")
                 console.print(f"  Approval:  [cyan]{repl.approval_mode}[/cyan]")
                 console.print(f"  Steps:     [cyan]{repl.steps}[/cyan]")
-                console.print(f"  Tokens:    [cyan]{repl.total_tokens:,}[/cyan]")
+                console.print(f"  Tokens:    [cyan]{repl.total_tokens}[/cyan]")
             elif cmd == "/memory":
                 global_mem = settings.home_dir / "REPOPILOT.md"
-                project_mem = repo_path / "REPOPILOT.md"
+                project_mem = repl.repo_path / "REPOPILOT.md"
                 if arg:
-                    note = arg.strip()
-                    if note.startswith("--global"):
-                        note = note[len("--global"):].strip()
+                    if arg.startswith("--global "):
+                        note = arg[len("--global "):].strip()
                         append_to_global_memory(settings.home_dir, note)
-                        console.print(f"[green]Added to global memory.[/green]")
+                        console.print("[green]Appended to global memory.[/green]")
                     else:
-                        append_to_project_memory(repo_path, note)
-                        console.print(f"[green]Added to project memory.[/green]")
-                    repl.do_clear()
+                        append_to_project_memory(repl.repo_path, arg.strip())
+                        console.print("[green]Appended to project memory.[/green]")
+                    repl._build_context()
                     session = session_store.create(title=f"REPL: {repo_path.name}", cwd=str(repo_path), model=settings.model)
                     repl.session_id = session.id
                 else:
                     console.print("[bold]Memory files:[/bold]")
                     if global_mem.exists():
-                        console.print(f"  Global (~/.repopilot/REPOPILOT.md): [green]exists[/green]")
+                        console.print("  Global (~/.repopilot/REPOPILOT.md): [green]exists[/green]")
                         gm = global_mem.read_text(encoding="utf-8")
                         console.print(Markdown(gm[:1000] + ("..." if len(gm) > 1000 else "")))
                     else:
                         console.print("  Global: [dim]not created yet[/dim]")
                     if project_mem.exists():
-                        console.print(f"  Project (./REPOPILOT.md): [green]exists[/green]")
+                        console.print("  Project (./REPOPILOT.md): [green]exists[/green]")
                         pm = project_mem.read_text(encoding="utf-8")
                         console.print(Markdown(pm[:1000] + ("..." if len(pm) > 1000 else "")))
                     else:
@@ -521,5 +741,3 @@ def run_repl(
             console.print("\n[yellow]Interrupted.[/yellow]")
         except Exception as e:
             console.print(f"[red]Error: {type(e).__name__}: {e}[/red]")
-
-

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repopilot-agent"
-version = "0.1.5"
+version = "0.2.0"
 description = "Local-first AI code agent in your terminal. Inspired by Claude Code and Codex CLI."
 readme = "README.md"
 requires-python = ">=3.10"

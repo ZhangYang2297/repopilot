@@ -136,6 +136,133 @@ class LLMService:
                 time.sleep(delay)
         raise last_exc  # type: ignore[misc]
 
+        raise last_exc  # type: ignore[misc]
+
+    def chat_stream(
+        self,
+        messages: list[dict],
+        tools: Optional[list[dict]] = None,
+        temperature: float = 0.3,
+        tier: Tier = Tier.DEFAULT,
+    ):
+        """Streaming chat: yields event dicts.
+
+        Yields dicts with keys:
+          - {"type": "text_delta", "content": str}  — incremental text
+          - {"type": "tool_call", "id": str, "name": str, "arguments": dict}  — complete tool call
+          - {"type": "done", "response": LLMResponse, "usage": dict}  — end of stream
+
+        Usage:
+            for event in llm.chat_stream(messages, tools=schemas):
+                if event["type"] == "text_delta": ...
+        """
+        if not self.cb.allow_request():
+            raise CircuitOpenError(f"Circuit open for model {self._model(tier)}")
+
+        kwargs: dict[str, Any] = dict(
+            model=self._model(tier),
+            messages=messages,
+            temperature=temperature,
+            timeout=self.TIER_TIMEOUTS[tier],
+            stream=True,
+        )
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        if self.api_key:
+            kwargs["api_key"] = self.api_key
+        if self.base_url:
+            kwargs["api_base"] = self.base_url
+
+        try:
+            stream = litellm.completion(**kwargs)
+        except Exception as e:
+            if not _is_retryable(e):
+                self.cb.record_failure()
+                raise
+            # One retry for stream (simpler than non-stream)
+            _logger.warning("Stream error (%s), retrying once: %s", type(e).__name__, str(e)[:120])
+            time.sleep(1)
+            try:
+                stream = litellm.completion(**kwargs)
+            except Exception:
+                self.cb.record_failure()
+                raise
+
+        accumulated_text = ""
+        tool_calls: dict[int, dict] = {}
+        final_usage: dict = {}
+
+        try:
+            for chunk in stream:
+                # Extract usage from final chunk
+                if getattr(chunk, "usage", None):
+                    u = chunk.usage
+                    final_usage = {
+                        "prompt_tokens": getattr(u, "prompt_tokens", 0) or 0,
+                        "completion_tokens": getattr(u, "completion_tokens", 0) or 0,
+                        "total_tokens": getattr(u, "total_tokens", 0) or 0,
+                    }
+
+                if not chunk.choices:
+                    continue
+
+                delta = chunk.choices[0].delta
+
+                # Text delta
+                if getattr(delta, "content", None):
+                    text = delta.content
+                    accumulated_text += text
+                    yield {"type": "text_delta", "content": text}
+
+                # Tool call deltas
+                if getattr(delta, "tool_calls", None):
+                    for tc_delta in delta.tool_calls:
+                        idx = getattr(tc_delta, "index", 0)
+                        if idx not in tool_calls:
+                            tool_calls[idx] = {
+                                "id": getattr(tc_delta, "id", f"call_{idx}"),
+                                "name": "",
+                                "arguments_raw": "",
+                            }
+                        fn = getattr(tc_delta, "function", None)
+                        if fn:
+                            if getattr(fn, "name", None):
+                                tool_calls[idx]["name"] = fn.name
+                            if getattr(fn, "arguments", None):
+                                tool_calls[idx]["arguments_raw"] += fn.arguments
+        except Exception as e:
+            self.cb.record_failure()
+            raise
+
+        self.cb.record_success()
+
+        # Emit complete tool calls
+        parsed_tool_calls = []
+        for idx in sorted(tool_calls.keys()):
+            tc = tool_calls[idx]
+            args_str = tc["arguments_raw"]
+            try:
+                args = json.loads(args_str) if args_str.strip() else {}
+            except json.JSONDecodeError:
+                args = {"_raw": args_str}
+            parsed_tc = {
+                "id": tc["id"],
+                "name": tc["name"],
+                "arguments": args,
+            }
+            parsed_tool_calls.append(parsed_tc)
+            yield {"type": "tool_call", **parsed_tc}
+
+        # Build final LLMResponse
+        response = LLMResponse(
+            content=accumulated_text,
+            tool_calls=[{"id": tc["id"], "name": tc["name"], "arguments": tc["arguments"]} for tc in parsed_tool_calls],
+            usage=final_usage,
+            model=self._model(tier),
+        )
+        yield {"type": "done", "response": response, "usage": final_usage}
+
     # Convenience methods
     def chat_messages(self, messages: list[dict], tier: Tier = Tier.DEFAULT, **kw) -> LLMResponse:
         """Chat with a full messages list."""
