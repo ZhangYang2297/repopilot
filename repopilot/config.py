@@ -190,7 +190,11 @@ class Settings:
         if s.config_file.exists():
             try:
                 with open(s.config_file, "rb") as fh:
-                    data = tomllib.load(fh)
+                    raw = fh.read()
+                if raw.startswith(b"\xef\xbb\xbf"):
+                    raw = raw[3:]
+                import io as _io
+                data = tomllib.load(_io.BytesIO(raw))
                 core = data.get(cls._TOML_SECTION, {})
                 for f in fields(cls):
                     if f.name in core and f.name in cls._PERSISTED_FIELDS:
@@ -233,5 +237,6 @@ def get_settings() -> Settings:
 def reset_settings_for_tests() -> None:
     global _settings
     _settings = None
+
 
 
