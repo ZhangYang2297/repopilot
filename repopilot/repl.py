@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -25,10 +26,50 @@ from repopilot.agent.context import ContextManager
 from repopilot.agent.parser import parse_response
 from repopilot.agent.loop import _load_system_prompt, _register_default_tools
 from repopilot.agent.compact import tool_compact
+from repopilot.agent.engine import AgentLoopCore
 from repopilot.agent.diff_tracker import DiffTracker
 from repopilot.tools.base import ApprovalRequired
 from repopilot.tools.result import ToolResult
 from repopilot.memory import load_memory, create_global_memory, append_to_project_memory, append_to_global_memory
+
+class ReplInput:
+    """Shared input source for main prompts and approval prompts."""
+
+    def __init__(self, is_tty: bool):
+        self._is_tty = is_tty
+        self._queue: deque[str] = deque()
+        if not is_tty:
+            try:
+                raw = sys.stdin.read()
+                self._queue.extend(
+                    line.strip() for line in raw.split("\n") if line.strip()
+                )
+            except Exception:
+                pass
+
+    @classmethod
+    def from_lines(cls, lines: list[str]) -> "ReplInput":
+        source = cls.__new__(cls)
+        source._is_tty = False
+        source._queue = deque(lines)
+        return source
+
+    def ask_user(self) -> Optional[str]:
+        if self._is_tty:
+            return Prompt.ask(
+                "[bold green]repopilot[/bold green]", default="", show_default=False
+            )
+        return self._queue.popleft() if self._queue else None
+
+    def ask_approval(self) -> str:
+        if self._is_tty:
+            return Prompt.ask(
+                "[bold]Allow?[/bold] [green]y[/green]=yes  [red]n[/red]=no  [yellow]a[/yellow]=always allow  [magenta]d[/magenta]=deny mode",
+                choices=["y", "n", "a", "d"],
+                default="n",
+                show_choices=False,
+            )
+        return self._queue.popleft() if self._queue else "n"
 
 HELP_TEXT = """
 **Slash commands:**
@@ -170,12 +211,10 @@ class ReplSession:
         self.console.print(f"\n[yellow]Approval required[/yellow] [dim]({reason})[/dim]")
         self.console.print(f"  [cyan]{tool_name}[/cyan]  [dim]{summary}[/dim]")
         try:
-            choice = Prompt.ask(
-                "[bold]Allow?[/bold] [green]y[/green]=yes  [red]n[/red]=no  [yellow]a[/yellow]=always allow  [magenta]d[/magenta]=deny mode",
-                choices=["y", "n", "a", "d"],
-                default="n",
-                show_choices=False,
-            )
+            input_source = getattr(self, "input_source", None)
+            if input_source is None:
+                input_source = ReplInput(is_tty=True)
+            choice = input_source.ask_approval()
         except (KeyboardInterrupt, EOFError):
             return False
         choice = (choice or "n").lower()
@@ -241,6 +280,12 @@ class ReplSession:
         self._streamed_answer = False
 
         with self._make_sandbox() as sb:
+            core = AgentLoopCore(
+                llm=self.llm,
+                sandbox=sb,
+                registry=self.registry,
+                verbose=self.verbose,
+            )
             turn_steps = 0
             max_turn_steps = self.settings.max_steps
 
@@ -276,15 +321,15 @@ class ReplSession:
                 if not streamed_ok:
                     try:
                         with self.console.status("[dim]Thinking...[/dim]", spinner="dots"):
-                            resp = self.llm.chat(
-                                messages=messages,
-                                tools=self.tool_schemas,
-                                tier=Tier.DEFAULT,
-                                temperature=0.2,
+                            step_result = core.execute_step(
+                                self.ctx, self.tool_schemas, temperature=0.2
                             )
-                        response_text = resp.content or ""
-                        tool_calls_raw = resp.tool_calls
-                        usage = resp.usage or {}
+                        response_text = step_result.text
+                        tool_calls_raw = (
+                            step_result.raw_response.tool_calls
+                            if step_result.raw_response else None
+                        )
+                        usage = step_result.usage
                     except KeyboardInterrupt:
                         self.console.print("[yellow]Interrupted.[/yellow]")
                         interrupt = True
@@ -347,17 +392,14 @@ class ReplSession:
                         tool_result = None
                         t0 = time.perf_counter()
                         try:
-                            tool_result = self.registry.execute(tool_name, tool_args, sb)
-                        except ApprovalRequired as ar:
-                            allowed = self._interactive_approve(ar.tool_name, ar.args, ar.reason)
-                            if allowed:
-                                self.registry.set_approval_callback(lambda *_a, **_k: True)
-                                try:
-                                    tool_result = self.registry.execute(tool_name, tool_args, sb)
-                                finally:
-                                    self.registry.set_approval_callback(None)
-                            else:
-                                tool_result = ToolResult(error=f"User denied: {ar.reason}")
+                            tool_result = core.execute_tool(
+                                tool_name,
+                                tool_args,
+                                call_id,
+                                approval_handler=lambda approval: self._interactive_approve(
+                                    approval.tool_name, approval.args, approval.reason
+                                ),
+                            )
                         except KeyboardInterrupt:
                             interrupt = True
                             tool_result = ToolResult(error="Interrupted by user")
@@ -376,8 +418,9 @@ class ReplSession:
                         if self.session_store:
                             self.session_store.append_event(self.session_id, "tool_result", {
                                 "tool": tool_name, "call_id": call_id,
-                                "content": tool_result.content if not tool_result.error else "",
-                                "error": tool_result.error or "",
+                                "content": tool_result.content,
+                                "error": tool_result.error,
+                                "metadata": tool_result.metadata,
                                 "duration_ms": int(elapsed * 1000),
                             })
 
@@ -418,8 +461,11 @@ class ReplSession:
         usage = {}
         got_tool_delta = False
         live = None
+        thinking_status = None
         self._streamed_answer = False
         try:
+            thinking_status = self.console.status("[dim]Thinking...[/dim]", spinner="dots")
+            thinking_status.start()
             gen = self.llm.chat_stream(
                 messages=messages,
                 tools=self.tool_schemas,
@@ -427,6 +473,9 @@ class ReplSession:
                 temperature=0.2,
             )
             for event in gen:
+                if thinking_status is not None:
+                    thinking_status.stop()
+                    thinking_status = None
                 etype = event.get("type") if isinstance(event, dict) else None
                 if etype == "text_delta":
                     accumulated += event.get("content", "")
@@ -461,6 +510,11 @@ class ReplSession:
                             accumulated = getattr(resp, "content", "") or ""
                     break
         finally:
+            if thinking_status is not None:
+                try:
+                    thinking_status.stop()
+                except Exception:
+                    pass
             if live is not None:
                 try:
                     live.__exit__(None, None, None)
@@ -546,25 +600,15 @@ def run_repl(
         console=console, verbose=verbose,
     )
 
-    _stdin_lines: list[str] = []
-    if not sys.stdin.isatty():
-        try:
-            raw = sys.stdin.read()
-            _stdin_lines = [l.strip() for l in raw.split("\n") if l.strip()]
-        except Exception:
-            _stdin_lines = []
-    _stdin_idx = 0
+    input_source = ReplInput(is_tty=sys.stdin.isatty())
+    repl.input_source = input_source
 
     while True:
         try:
-            if sys.stdin.isatty():
-                user_input = Prompt.ask("[bold green]repopilot[/bold green]", default="", show_default=False)
-            else:
-                if _stdin_idx >= len(_stdin_lines):
-                    console.print("\n[dim]Goodbye.[/dim]")
-                    break
-                user_input = _stdin_lines[_stdin_idx]
-                _stdin_idx += 1
+            user_input = input_source.ask_user()
+            if user_input is None:
+                console.print("\n[dim]Goodbye.[/dim]")
+                break
         except EOFError:
             console.print("\n[dim]Goodbye.[/dim]")
             break

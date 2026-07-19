@@ -41,6 +41,10 @@ repopilot> fix the failing test in test_auth.py
 
 - **Claude Code / Codex CLI style REPL** — `cd project && repopilot`, start chatting immediately
 - **Pure ReAct agent loop** — single model does all thinking, no multi-agent overhead
+- **Streaming with waiting feedback** — shows `Thinking...` immediately, then renders assistant text incrementally
+- **Session diff and undo** — inspect changes with `/diff` and roll them back step-by-step with `/undo`
+- **Interactive approvals** — confirm writes/commands with `y/n/a/d`; dangerous operations remain hard-denied
+- **Tool timing** — each tool execution displays its elapsed time
 - **Persistent multi-turn conversation** with automatic context compaction
 - **Layered memory system** — global + project `REPOPILOT.md` files (like CLAUDE.md)
 - **Cross-session resume** — `/resume` to continue where you left off
@@ -129,6 +133,8 @@ repopilot chat "add --verbose flag to cli.py" -r ./myproj
 | `/sessions` | List recent sessions |
 | `/cost` | Show token usage/cost |
 | `/status` | Show current configuration |
+| `/diff` | Show all file changes made during this session |
+| `/undo` | Revert the most recent file change |
 
 ### Project Memory (REPOPILOT.md)
 
@@ -179,7 +185,7 @@ repopilot models       # list recommended models
 ┌─────────────────────────────────┐
 │  CLI (Typer + Rich)    REPL     │
 ├─────────────────────────────────┤
-│  Agent Loop (ReAct)             │
+│  Shared AgentLoopCore (ReAct)   │
 ├─────────────────────────────────┤
 │  Context Manager  L0-L5 memory  │
 ├─────────────────────────────────┤
@@ -190,6 +196,18 @@ repopilot models       # list recommended models
 │  LLM Service (LiteLLM)          │
 └─────────────────────────────────┘
 ```
+
+Both one-shot `chat` tasks and the interactive REPL use the same UI-independent
+`AgentLoopCore` for response normalization and tool execution. The REPL adds
+pre-first-event `Thinking...` feedback, streaming rendering, interactive approval,
+persistent context, `/diff`, and `/undo`. The indicator only communicates that a
+request is active; it does not expose or fabricate hidden model reasoning.
+
+## Development Status
+
+- Current package version: **v0.2.0**
+- Phase 2A is complete: streaming, first-event waiting feedback, TTFT/total-duration metrics, tool timing, interactive approval, `/diff`, and `/undo`
+- **492** project tests pass (excluding fixture and E2E data projects from collection)
 
 ## Built-in Tools
 

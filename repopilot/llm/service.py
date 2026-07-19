@@ -174,6 +174,9 @@ class LLMService:
         if self.base_url:
             kwargs["api_base"] = self.base_url
 
+        request_started_at = time.perf_counter()
+        first_event_emitted = False
+
         try:
             stream = litellm.completion(**kwargs)
         except Exception as e:
@@ -213,7 +216,13 @@ class LLMService:
                 if getattr(delta, "content", None):
                     text = delta.content
                     accumulated_text += text
-                    yield {"type": "text_delta", "content": text}
+                    event = {"type": "text_delta", "content": text}
+                    if not first_event_emitted:
+                        event["ttft_ms"] = max(
+                            1, round((time.perf_counter() - request_started_at) * 1000)
+                        )
+                        first_event_emitted = True
+                    yield event
 
                 # Tool call deltas
                 if getattr(delta, "tool_calls", None):
@@ -252,7 +261,13 @@ class LLMService:
                 "arguments": args,
             }
             parsed_tool_calls.append(parsed_tc)
-            yield {"type": "tool_call", **parsed_tc}
+            event = {"type": "tool_call", **parsed_tc}
+            if not first_event_emitted:
+                event["ttft_ms"] = max(
+                    1, round((time.perf_counter() - request_started_at) * 1000)
+                )
+                first_event_emitted = True
+            yield event
 
         # Build final LLMResponse
         response = LLMResponse(
@@ -261,7 +276,14 @@ class LLMService:
             usage=final_usage,
             model=self._model(tier),
         )
-        yield {"type": "done", "response": response, "usage": final_usage}
+        yield {
+            "type": "done",
+            "response": response,
+            "usage": final_usage,
+            "total_duration_ms": max(
+                1, round((time.perf_counter() - request_started_at) * 1000)
+            ),
+        }
 
     # Convenience methods
     def chat_messages(self, messages: list[dict], tier: Tier = Tier.DEFAULT, **kw) -> LLMResponse:

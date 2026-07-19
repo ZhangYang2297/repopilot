@@ -22,15 +22,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from repopilot.agent.compact import tool_compact
+from repopilot.agent.engine import AgentLoopCore
 from repopilot.agent.context import ContextManager
-from repopilot.agent.parser import ParsedResponse, parse_response
 from repopilot.hooks.manager import HookManager, HookResult
 from repopilot.llm.service import LLMService, Tier
 from repopilot.permission.engine import PermissionEngine
 from repopilot.sandbox.base import Sandbox
 from repopilot.session.store import SessionStore, Session
-from repopilot.tools.base import AgentFinished, ApprovalRequired, Tool
+from repopilot.tools.base import AgentFinished, Tool
 from repopilot.tools.registry import ToolRegistry
 from repopilot.tools.result import ToolResult
 from repopilot.memory import load_memory as _load_memory
@@ -161,6 +160,14 @@ def run_agent(
     if tools:
         for t in tools:
             registry.register(t)
+    core = AgentLoopCore(
+        llm=llm,
+        sandbox=sandbox,
+        registry=registry,
+        hooks=hooks,
+        stream_callback=stream_callback,
+        verbose=verbose,
+    )
 
     # ── Repo map (initial scan) ────────────────
     repo_map_str = sandbox.get_repo_tree(max_tokens=4000)
@@ -242,16 +249,12 @@ def run_agent(
             if hook_result.action == "skip" and hook_result.override is not None:
                 # Use fake response from hook (for testing/mocking)
                 llm_response = hook_result.override
+                step_result = core.normalize_response(llm_response)
             else:
-                # ── Call LLM ───────────────────
+                # ── Call LLM via shared core ──
                 _emit("thinking", step=steps)
                 try:
-                    llm_response = llm.chat(
-                        messages=messages,
-                        tools=tool_schemas,
-                        tier=Tier.DEFAULT,
-                        temperature=0.2,
-                    )
+                    step_result = core.execute_step(ctx, tool_schemas, temperature=0.2)
                 except Exception as e:
                     error_msg = f"LLM error: {e}"
                     _emit("error", message=error_msg)
@@ -260,27 +263,21 @@ def run_agent(
                     break
 
             # ── Track usage ────────────────────
-            usage = llm_response.usage
+            usage = step_result.usage
             prompt_tokens = usage.get("prompt_tokens", 0)
             completion_tokens = usage.get("completion_tokens", 0)
             total_tokens += usage.get("total_tokens", prompt_tokens + completion_tokens)
             if prompt_tokens:
                 ctx.update_actual_usage(prompt_tokens)
 
-            hooks.fire("post_llm", response=llm_response)
-
-            # ── Parse response ────────────────
-            parsed = parse_response(
-                content=llm_response.content,
-                tool_calls=llm_response.tool_calls,
-                finish_reason="stop",
-            )
+            hooks.fire("post_llm", response=step_result.raw_response)
 
             _record("assistant_msg", {
-                "content": llm_response.content,
-                "tool_calls": llm_response.tool_calls,
+                "content": step_result.text,
+                "tool_calls": step_result.raw_response.tool_calls if step_result.raw_response else None,
                 "usage": usage,
             })
+            parsed = step_result.parsed
 
             # ── Handle tool calls ─────────────
             if parsed.is_tool_call:
@@ -308,11 +305,9 @@ def run_agent(
                     elif pre_result.action == "skip" and pre_result.override is not None:
                         tool_result = pre_result.override
                     else:
-                        # ── Execute tool ──────
+                        # ── Execute tool via shared core ──
                         try:
-                            tool_result = registry.execute(tool_name, tool_args, sandbox)
-                        except ApprovalRequired as ar:
-                            tool_result = ToolResult(error=f"Approval required for {ar.tool_name}: {ar.reason}. Use --approval-mode auto.")
+                            tool_result = core.execute_tool(tool_name, tool_args, call_id)
                         except AgentFinished as af:
                             # Finish tool raised AgentFinished
                             summary = af.summary
@@ -324,10 +319,12 @@ def run_agent(
                         except Exception as e:
                             tool_result = ToolResult(error=f"{type(e).__name__}: {e}")
 
+                    duration_ms = core.last_duration_ms
+
                     # ── Post-tool hook ────────
                     post_result = hooks.fire("post_tool",
                                             tool_name=tool_name, args=tool_args,
-                                            result=tool_result, duration_ms=0)
+                                            result=tool_result, duration_ms=duration_ms)
                     if post_result.override is not None:
                         tool_result = post_result.override
 

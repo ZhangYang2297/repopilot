@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 import fnmatch
+import json
 from pathlib import Path
 
 from repopilot.permission.patterns import (
@@ -84,21 +85,16 @@ class PermissionEngine:
         if tool_name in READ_ONLY_TOOLS:
             return ALLOW
 
-        # 2. Check session "always allow" memory
-        arg_key = self._arg_signature(tool_name, args)
-        if (tool_name, arg_key) in self._always_allow:
-            return ALLOW
-
         cmd = args.get("command", "") or args.get("cmd", "")
         path = args.get("path", "") or args.get("file", "") or args.get("file_path", "")
 
-        # 3. Dangerous path check for write tools
+        # 2. Hard-deny checks always take precedence over remembered grants
         if tool_name in WRITE_TOOLS and path:
             danger = self._check_dangerous_path(path)
             if danger:
                 return PermissionDecision("deny", f"Access denied: {danger}")
 
-        # 4. Exec tool checks
+        # 3. Exec tool checks
         if tool_name in EXEC_TOOLS and cmd:
             # 4a. Hard deny: dangerous commands (rm -rf /, sudo, curl|sh, etc.)
             bad = is_dangerous_command(cmd)
@@ -116,6 +112,11 @@ class PermissionEngine:
             dp = self._check_dangerous_path_in_cmd(cmd)
             if dp:
                 return PermissionDecision("deny", dp)
+
+        # 4. Check session "always allow" memory
+        arg_key = self._arg_signature(tool_name, args)
+        if (tool_name, arg_key) in self._always_allow:
+            return ALLOW
 
         # 5. Mode-based decision
         if self.mode == "auto":
@@ -174,15 +175,8 @@ class PermissionEngine:
 
     @staticmethod
     def _arg_signature(tool_name: str, args: dict) -> str:
-        if "path" in args:
-            return f"path={args['path']}"
-        if "file" in args:
-            return f"path={args['file']}"
-        if "command" in args or "cmd" in args:
-            cmd = args.get("command", "") or args.get("cmd", "")
-            first = cmd.strip().split()[0] if cmd.strip() else ""
-            return f"cmd={first}"
-        return ""
+        """Return a stable fingerprint of the complete tool arguments."""
+        return json.dumps(args, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
     @staticmethod
     def _summarize_args(args: dict) -> str:
@@ -199,5 +193,3 @@ class PermissionEngine:
     def _truncate(s: str, n: int) -> str:
         s = s.replace("\n", " ")
         return s[:n] + ("..." if len(s) > n else "")
-
-
