@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional
 
 from repopilot.agent.context import ContextManager
 from repopilot.agent.parser import ParsedResponse, parse_response
+from repopilot.agent.state_machine import TaskState, TaskStateMachine
 from repopilot.hooks.manager import HookManager
 from repopilot.llm.service import LLMService, Tier
 from repopilot.permission.engine import PermissionEngine
@@ -32,7 +33,11 @@ ApprovalHandler = Callable[[ApprovalRequired], bool]
 
 
 class AgentLoopCore:
-    """UI-agnostic LLM decision and tool execution core."""
+    """UI-agnostic LLM decision and tool execution core.
+
+    Each instance carries a TaskStateMachine that tracks the agent lifecycle
+    across all entry points (run_agent, ReplSession).
+    """
 
     def __init__(
         self,
@@ -44,6 +49,7 @@ class AgentLoopCore:
         stream_callback: Optional[Callable] = None,
         verbose: bool = False,
         registry: Optional[ToolRegistry] = None,
+        state_machine: Optional[TaskStateMachine] = None,
     ) -> None:
         self.llm = llm
         self.sandbox = sandbox
@@ -60,6 +66,7 @@ class AgentLoopCore:
             else:
                 self._register_default_tools()
         self.last_duration_ms = 0
+        self.state_machine = state_machine or TaskStateMachine()
 
     def _register_default_tools(self) -> None:
         from repopilot.tools.exec_tools import BashTool, RunPythonTool
@@ -82,8 +89,19 @@ class AgentLoopCore:
         context: ContextManager,
         tool_schemas: Optional[list[dict]] = None,
         temperature: float = 0.2,
+        transition_on_plan: bool = True,
     ) -> StepResult:
-        """Call the LLM once and normalize parsing for every entry point."""
+        """Call the LLM once and normalize parsing for every entry point.
+
+        If transition_on_plan is True (default) and the state machine is in
+        IDLE, it will automatically transition to PLANNING first.
+        """
+        if self.state_machine.state in (TaskState.IDLE, TaskState.PLANNING):
+            if self.state_machine.state == TaskState.IDLE and transition_on_plan:
+                self.state_machine.transition("plan")
+            self.state_machine.transition("run", reason="Calling LLM")
+        elif self.state_machine.state in (TaskState.WAITING_TOOL, TaskState.WAITING_APPROVAL):
+            self.state_machine.transition("run", reason="Resuming from wait")
         response = self.llm.chat(
             messages=context.build_messages(),
             tools=tool_schemas or self.tool_schemas,

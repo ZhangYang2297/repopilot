@@ -1,4 +1,4 @@
-"""Agent Loop — Plan-Act-ReAct cycle (pure ReAct, no separate planner/reflector).
+﻿"""Agent Loop — Plan-Act-ReAct cycle (pure ReAct, no separate planner/reflector).
 
 Architecture (aligned with Claude Code / Codex CLI):
 1. Build system prompt (with repo map, memory, injected skills)
@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from repopilot.agent.engine import AgentLoopCore
+from repopilot.agent.state_machine import TaskState
 from repopilot.agent.context import ContextManager
 from repopilot.hooks.manager import HookManager, HookResult
 from repopilot.llm.service import LLMService, Tier
@@ -218,6 +219,8 @@ def run_agent(
     error_msg = ""
 
     try:
+        _max_steps_exceeded = False
+        core.state_machine.transition("plan")
         while steps < max_steps:
             steps += 1
 
@@ -250,6 +253,7 @@ def run_agent(
                 # Use fake response from hook (for testing/mocking)
                 llm_response = hook_result.override
                 step_result = core.normalize_response(llm_response)
+                core.state_machine.transition("run", reason="pre_llm override")
             else:
                 # ── Call LLM via shared core ──
                 _emit("thinking", step=steps)
@@ -259,7 +263,7 @@ def run_agent(
                     error_msg = f"LLM error: {e}"
                     _emit("error", message=error_msg)
                     _record("error", {"error": str(e)})
-                    status = "error"
+                    core.state_machine.transition("fail", reason="Tool execution error")
                     break
 
             # ── Track usage ────────────────────
@@ -307,11 +311,12 @@ def run_agent(
                     else:
                         # ── Execute tool via shared core ──
                         try:
+                            core.state_machine.transition("wait_tool", reason=f"Executing {tool_name}")
                             tool_result = core.execute_tool(tool_name, tool_args, call_id)
                         except AgentFinished as af:
                             # Finish tool raised AgentFinished
                             summary = af.summary
-                            status = "completed"
+                            core.state_machine.transition("complete", reason=summary)
                             _record("finish", {"summary": summary, "tests_passed": af.tests_passed})
                             _emit("finish", summary=summary, steps=steps)
                             hooks.fire("on_finish", summary=summary, tests_passed=af.tests_passed)
@@ -358,7 +363,7 @@ def run_agent(
             elif parsed.is_finish:
                 # Finish detected via tool or XML tag
                 summary = parsed.content or "Task completed."
-                status = "completed"
+                core.state_machine.transition("complete", reason=summary)
                 _record("finish", {"summary": summary})
                 _emit("finish", summary=summary, steps=steps)
                 hooks.fire("on_finish", summary=summary, tests_passed=True)
@@ -372,7 +377,7 @@ def run_agent(
                     ctx.add_assistant(answer)
                     summary = answer
                     _emit("text", content=answer, role="assistant")
-                status = "completed"
+                core.state_machine.transition("complete", reason=summary)
                 _record("assistant_msg", {"content": answer})
                 hooks.fire("on_finish", summary=summary or "Done", tests_passed=True)
                 _emit("finish", summary=summary or "Done", steps=steps)
@@ -380,18 +385,20 @@ def run_agent(
 
         else:
             # Max steps reached
-            status = "max_steps"
+            _max_steps_exceeded = True
+            core.state_machine.transition("fail", reason=f"Reached maximum steps ({max_steps}) without completing")
             summary = f"Reached maximum steps ({max_steps}) without completing."
             error_msg = summary
             _emit("error", message=summary)
             _record("error", {"error": summary})
 
     except KeyboardInterrupt:
-        status = "cancelled"
+        core.state_machine.transition("cancel", reason="User Cancelled")
+        core.state_machine.transition("cancelled", reason="User cancelled")
         summary = "Cancelled by user."
         _emit("error", message=summary)
     except Exception as e:
-        status = "error"
+        core.state_machine.transition("fail", reason=f"{type(e).__name__}: {e}")
         error_msg = f"{type(e).__name__}: {e}"
         summary = error_msg
         _emit("error", message=error_msg)
@@ -399,6 +406,11 @@ def run_agent(
         hooks.fire("on_error", exception=e)
 
     duration_ms = int((time.time() - t0) * 1000)
+
+    if _max_steps_exceeded:
+        status = "max_steps"
+    elif core.state_machine.is_terminal:
+        status = core.state_machine.to_run_result_status()
 
     return RunResult(
         status=status,
