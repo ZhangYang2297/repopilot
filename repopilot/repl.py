@@ -443,7 +443,7 @@ class ReplSession:
                     self.ctx.add_assistant(final_answer)
                 break
 
-        if final_answer and not self._streamed_answer:
+        if final_answer:
             self.console.print()
             try:
                 self.console.print(Markdown(final_answer))
@@ -485,7 +485,7 @@ class ReplSession:
                                 live = Live(Markdown(accumulated),
                                             console=self.console,
                                             refresh_per_second=10,
-                                            transient=False)
+                                            transient=True)
                                 live.__enter__()
                                 self._streamed_answer = True
                             except Exception:
