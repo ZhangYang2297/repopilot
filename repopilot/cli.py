@@ -1,4 +1,9 @@
 from __future__ import annotations
+import os
+
+# Prevent LiteLLM from fetching model cost map on import (causes 10s+ timeout)
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "1")
+
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -106,7 +111,7 @@ def _ensure_configured() -> None:
     # Step 2: API Key
     console.rule(f"[bold]{_t('config_key', lang)}[/bold]")
     console.print(f"[dim]{_t('config_key_help', lang)}[/dim]")
-    api_key = typer.prompt(_t("config_key_prompt", lang), hide_input=True).strip()
+    api_key = typer.prompt(_t("config_key_prompt", lang), hide_input=False).strip()
 
     # Step 3: Model
     console.rule(f"[bold]{_t('config_model', lang)}[/bold]")
