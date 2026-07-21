@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Optional
 
 from rich.console import Console
-from rich.live import Live
 from rich.markdown import Markdown
 from rich.prompt import Prompt, Confirm
 from rich.syntax import Syntax
@@ -460,7 +459,6 @@ class ReplSession:
         tool_calls = []
         usage = {}
         got_tool_delta = False
-        live = None
         thinking_status = None
         self._streamed_answer = False
         try:
@@ -480,21 +478,7 @@ class ReplSession:
                 if etype == "text_delta":
                     accumulated += event.get("content", "")
                     if not got_tool_delta:
-                        if live is None:
-                            try:
-                                live = Live(Markdown(accumulated),
-                                            console=self.console,
-                                            refresh_per_second=10,
-                                            transient=True)
-                                live.__enter__()
-                                self._streamed_answer = True
-                            except Exception:
-                                live = None
-                        else:
-                            try:
-                                live.update(Markdown(accumulated))
-                            except Exception:
-                                pass
+                        self._streamed_answer = True
                 elif etype == "tool_call":
                     got_tool_delta = True
                     tool_calls.append({
@@ -513,11 +497,6 @@ class ReplSession:
             if thinking_status is not None:
                 try:
                     thinking_status.stop()
-                except Exception:
-                    pass
-            if live is not None:
-                try:
-                    live.__exit__(None, None, None)
                 except Exception:
                     pass
         if tool_calls:
