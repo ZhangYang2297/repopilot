@@ -661,12 +661,15 @@ def run_repl(
                 if arg:
                     p = Path(arg).expanduser().resolve()
                     if p.exists() and p.is_dir():
+                        old_path = repl.repo_path
                         repl.repo_path = p
                         repl.diff_tracker = DiffTracker(str(p))
-                        repl._build_context()
                         console.print(f"[green]cd -> {p}[/green]")
-                        session = session_store.create(title=f"REPL: {p.name}", cwd=str(p), model=settings.model)
-                        repl.session_id = session.id
+                        if session_store:
+                            # Update session cwd, keep conversation history
+                            session = session_store.get(repl.session_id)
+                            if session:
+                                session_store.append_event(repl.session_id, "info", {"cd": str(p), "from": str(old_path)})
                     else:
                         console.print(f"[red]Not a directory: {p}[/red]")
                 else:
