@@ -5,7 +5,7 @@ from rich.table import Table
 from pathlib import Path
 
 from repopilot.config import get_settings, reset_settings_for_tests, Settings
-from repopilot.repl import run_repl
+
 
 # Fix Windows console encoding for Rich/Markdown output (bullet chars, etc.)
 import sys as _sys
@@ -38,7 +38,7 @@ RECOMMENDED_MODELS = {
 
 app = typer.Typer(
     name="repopilot",
-    help="RepoPilot - Local-first code agent.",
+    help="RepoPilot - Local-first code agent. / 本地优先的 AI 代码助手。",
     add_completion=False,
     no_args_is_help=False,
 )
@@ -96,6 +96,7 @@ def _main(ctx: typer.Context,
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
         _ensure_configured()
+        from repopilot.repl import run_repl
         import os
         repo_path = Path(repo).resolve()
         run_repl(

@@ -29,7 +29,8 @@ class Settings:
     fast_model: str = ""                     # cheap model for plan/reflect/compact
     strong_model: str = ""                   # strong model for final answer
     api_key: str = ""                        # API key (sk-...); empty means "use env var"
-    base_url: str = ""                       # Custom base URL (for ARK/DashScope/vLLM/local)
+    base_url: str = ""
+    language: str = "en"                        # en | zh                       # Custom base URL (for ARK/DashScope/vLLM/local)
 
     # Sandbox
     sandbox_type: str = "local"             # docker | local
@@ -73,6 +74,8 @@ class Settings:
             )
         if self.approval_mode not in ("auto", "confirm", "edit-only", "deny"):
             raise ValueError(f"invalid approval_mode: {self.approval_mode!r}")
+        if self.language not in ("en", "zh"):
+            raise ValueError(f"language must be en or zh, got {self.language!r}")
         if self.max_steps < 1:
             raise ValueError("max_steps must be >= 1")
         if self.budget_tokens < 1000:
@@ -127,6 +130,7 @@ class Settings:
         "strong_model":     ("REPOPILOT_STRONG_MODEL",     str),
         "api_key":          ("REPOPILOT_API_KEY",          str),
         "base_url":         ("REPOPILOT_BASE_URL",         str),
+        "language":         ("REPOPILOT_LANGUAGE",          str),
         "sandbox_type":     ("REPOPILOT_SANDBOX",          str),
         "docker_image":     ("REPOPILOT_DOCKER_IMAGE",     str),
         "approval_mode":    ("REPOPILOT_APPROVAL_MODE",    str),
