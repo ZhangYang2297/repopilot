@@ -175,6 +175,17 @@ def _main(ctx: typer.Context,
         from repopilot import __version__
         console.print(f"repopilot {__version__}")
         raise typer.Exit()
+    # Share top-level options with subcommands via ctx.obj so
+    # `repopilot -r <path> chat "..."` propagates --repo / --model / etc.
+    ctx.ensure_object(dict)
+    ctx.obj.update({
+        "repo": repo,
+        "sandbox": sandbox,
+        "approval_mode": approval_mode,
+        "model": model,
+        "verbose": verbose,
+        "no_verify": no_verify,
+    })
     if ctx.invoked_subcommand is None:
         _ensure_configured()
         from repopilot.repl import run_repl
@@ -241,6 +252,7 @@ def version() -> None:
 
 @app.command()
 def chat(
+    ctx: typer.Context,
     task: str = typer.Argument(..., help="Task to perform"),
     repo: str = typer.Option(".", "--repo", "-r", help="Path to target repo"),
     model: str = typer.Option("", "--model", "-m", help="Override model"),
@@ -270,6 +282,18 @@ def chat(
     from repopilot.agent.cost import CostTracker
     from repopilot.session.store import SessionStore
     from repopilot.agent.loop import run_agent, StreamEvent
+
+    # Inherit top-level options if the subcommand did not override them.
+    _parent = (ctx.obj or {}) if ctx else {}
+    if repo == "." and _parent.get("repo") and _parent["repo"] != ".":
+        repo = _parent["repo"]
+    if not sandbox:
+        sandbox = _parent.get("sandbox", "") or ""
+    if not approval_mode:
+        approval_mode = _parent.get("approval_mode", "") or ""
+    if not model:
+        model = _parent.get("model", "") or ""
+    verbose = verbose or bool(_parent.get("verbose"))
 
     s = _gs()
     chosen_model = model or s.model
