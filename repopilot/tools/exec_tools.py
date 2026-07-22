@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from repopilot.tools.base import Tool, TIER_EXEC
 from repopilot.tools.errors import ToolErrorCode
 from repopilot.tools.result import ToolResult, truncate_text, error_result
+from repopilot.sandbox.command_guard import scan_command, scan_python_code
 
 if TYPE_CHECKING:
     from repopilot.sandbox.base import Sandbox
@@ -58,6 +59,10 @@ class BashTool(Tool):
             return error_result("bash requires 'command' argument", ToolErrorCode.INVALID_ARGS)
         timeout = min(int(args.get("timeout", self.DEFAULT_TIMEOUT)), self.MAX_TIMEOUT)
         cwd = args.get("cwd")
+
+        blocked, reason = scan_command(cmd)
+        if blocked:
+            return error_result(f"Refused dangerous command ({reason})", ToolErrorCode.PERMISSION)
 
         # Auto-translate common Unix commands on Windows (best-effort)
         if _IS_WINDOWS:
@@ -169,6 +174,9 @@ class RunPythonTool(Tool):
         code = args.get("code", "")
         if not code:
             return error_result("run_python requires 'code' argument", ToolErrorCode.INVALID_ARGS)
+        blocked, reason = scan_python_code(code)
+        if blocked:
+            return error_result(f"Refused dangerous code ({reason})", ToolErrorCode.PERMISSION)
         timeout = min(int(args.get("timeout", self.DEFAULT_TIMEOUT)), self.MAX_TIMEOUT)
 
         tmp_name = f"_runpy_{_uuid.uuid4().hex[:8]}.py"
