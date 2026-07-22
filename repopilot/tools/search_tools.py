@@ -70,8 +70,11 @@ class GrepTool(Tool):
                            if m.file == norm or m.file.startswith(norm + "/") or m.file.startswith(norm + "\\")]
 
         if not matches:
-            return ToolResult(content=f"No matches found for pattern: {pattern!r}"
-                              + (f" in {search_path}" if search_path != "." else ""))
+            return ToolResult(
+                content=f"No matches found for pattern: {pattern!r}"
+                        + (f" in {search_path}" if search_path != "." else ""),
+                metadata={"match_count": 0, "file_count": 0},
+            )
 
         lines = [f"Found {len(matches)} matches for {pattern!r}"
                  + (f" in {search_path}" if search_path != "." else "")

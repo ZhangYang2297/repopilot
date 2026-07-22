@@ -49,6 +49,7 @@ class Settings:
     tool_timeout: int = 120
     reflect_every: int = 5
     max_consecutive_failures: int = 10
+    verify_before_finish: bool = True
 
     # Paths (not persisted to config.toml — always derived)
     home_dir: Path = field(default_factory=lambda: _expand(
@@ -148,7 +149,7 @@ class Settings:
     _PERSISTED_FIELDS = {    # which fields go into config.toml
         "model", "fast_model", "strong_model", "api_key", "base_url",
         "sandbox_type", "docker_image", "docker_network", "docker_mem_limit",
-        "approval_mode", "max_steps", "budget_tokens", "tool_timeout",
+        "approval_mode", "max_steps", "budget_tokens", "tool_timeout", "verify_before_finish",
         "stream", "cost_tracking",
     }
 

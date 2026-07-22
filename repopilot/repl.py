@@ -29,6 +29,7 @@ from repopilot.agent.engine import AgentLoopCore
 from repopilot.agent.diff_tracker import DiffTracker
 from repopilot.agent.tool_display import format_tool_line, format_result_suffix
 from repopilot.agent.loop_guard import LoopGuard
+from repopilot.agent.finish_verify import run_verify
 from repopilot.tools.base import ApprovalRequired
 from repopilot.tools.result import ToolResult
 from repopilot.memory import load_memory, create_global_memory, append_to_project_memory, append_to_global_memory
@@ -271,6 +272,24 @@ class ReplSession:
         else:
             self.console.print("[dim]Nothing to undo.[/dim]")
 
+
+    def _maybe_verify(self, sandbox):
+        """Run the completion verification gate if enabled and diff is non-empty."""
+        if not getattr(self.settings, "verify_before_finish", True):
+            return None
+        try:
+            changed = self.diff_tracker.get_changed_files()
+        except Exception:
+            return None
+        if not changed:
+            return None
+        try:
+            return run_verify(changed, sandbox)
+        except Exception as e:
+            # Verifier crash must never block the user's task.
+            self.console.print(f"[dim]verify skipped: {e}[/dim]")
+            return None
+
     def run_turn(self, user_message: str) -> bool:
         _turn_t0 = time.perf_counter()
         self.ctx.add_user(user_message)
@@ -357,6 +376,18 @@ class ReplSession:
 
                 if parsed.is_finish:
                     final_answer = parsed.content or response_text
+                    v = self._maybe_verify(sb)
+                    if v and v.blocked:
+                        # Refuse to finish; feed the failure back to the model.
+                        note = v.summary()
+                        self.console.print(f"[yellow]! verify blocked finish[/yellow]\n[yellow]{note}[/yellow]")
+                        self.ctx.add_tool_result(
+                            "verify", f"[verify_block] {note}", is_error=True,
+                        )
+                        turn_steps += 0  # continue the outer loop, do NOT break
+                        continue
+                    if v and v.checked_files:
+                        final_answer = f"{final_answer}\n\n{v.summary()}"
                     self.ctx.add_assistant(final_answer)
                     break
 
@@ -377,6 +408,23 @@ class ReplSession:
 
                         if tool_name == "finish":
                             final_answer = tool_args.get("summary", response_text)
+                            v = self._maybe_verify(sb)
+                            if v and v.blocked:
+                                note = v.summary()
+                                self.console.print(f"[yellow]! verify blocked finish[/yellow]\n[yellow]{note}[/yellow]")
+                                # Feed the error back to the model via tool_result
+                                # so it keeps working and does not exit yet.
+                                self.ctx.add_tool_result(call_id, f"[verify_block] {note}", is_error=True)
+                                if self.session_store:
+                                    self.session_store.append_event(self.session_id, "tool_result", {
+                                        "tool": "finish", "call_id": call_id,
+                                        "content": note, "error": note,
+                                        "metadata": {"reason": "verify_block"},
+                                        "duration_ms": 0,
+                                    })
+                                continue
+                            if v and v.checked_files:
+                                final_answer = f"{final_answer}\n\n{v.summary()}"
                             if self.session_store:
                                 self.session_store.append_event(self.session_id, "finish", {"summary": final_answer})
                             self.ctx.add_assistant(final_answer)

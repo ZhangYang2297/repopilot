@@ -168,6 +168,7 @@ def _main(ctx: typer.Context,
           sandbox: str = typer.Option("", "--sandbox", help="docker or local (default: from config)"),
           approval_mode: str = typer.Option("", "--approval-mode", help="auto|confirm|edit-only|deny (default: from config)"),
           model: str = typer.Option("", "--model", "-m", help="Override model"),
+          no_verify: bool = typer.Option(False, "--no-verify", help="Skip completion verification gate"),
           verbose: bool = typer.Option(False, "--verbose", "-v"),
           version: bool = typer.Option(False, "--version", help="Show version and exit")):
     if version:
@@ -179,6 +180,11 @@ def _main(ctx: typer.Context,
         from repopilot.repl import run_repl
         import os
         repo_path = Path(repo).resolve()
+        if no_verify:
+            try:
+                get_settings().verify_before_finish = False
+            except Exception:
+                pass
         run_repl(
             repo_path=repo_path,
             approval_mode=approval_mode or get_settings().approval_mode,
