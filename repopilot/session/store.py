@@ -228,7 +228,7 @@ class SessionStore:
         """Read events from a session, optionally starting after a given id."""
         session = self.get(session_id)
         if session is None:
-            raise KeyError(f"Session {session_id!r} not found")
+            return []
         events: list[dict] = []
         with open(session.rollout_path, "r", encoding="utf-8") as f:
             for line in f:

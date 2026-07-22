@@ -57,7 +57,13 @@ class BashTool(Tool):
         cmd = args.get("command", "").strip()
         if not cmd:
             return error_result("bash requires 'command' argument", ToolErrorCode.INVALID_ARGS)
-        timeout = min(int(args.get("timeout", self.DEFAULT_TIMEOUT)), self.MAX_TIMEOUT)
+        try:
+            timeout = min(int(args.get("timeout", self.DEFAULT_TIMEOUT)), self.MAX_TIMEOUT)
+        except (TypeError, ValueError):
+            return error_result(
+                f"bash 'timeout' must be an integer, got {args.get('timeout')!r}",
+                ToolErrorCode.INVALID_ARGS,
+            )
         cwd = args.get("cwd")
 
         blocked, reason = scan_command(cmd)
@@ -177,7 +183,13 @@ class RunPythonTool(Tool):
         blocked, reason = scan_python_code(code)
         if blocked:
             return error_result(f"Refused dangerous code ({reason})", ToolErrorCode.PERMISSION)
-        timeout = min(int(args.get("timeout", self.DEFAULT_TIMEOUT)), self.MAX_TIMEOUT)
+        try:
+            timeout = min(int(args.get("timeout", self.DEFAULT_TIMEOUT)), self.MAX_TIMEOUT)
+        except (TypeError, ValueError):
+            return error_result(
+                f"run_python 'timeout' must be an integer, got {args.get('timeout')!r}",
+                ToolErrorCode.INVALID_ARGS,
+            )
 
         tmp_name = f"_runpy_{_uuid.uuid4().hex[:8]}.py"
         tmp_host_path = None

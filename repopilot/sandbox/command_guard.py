@@ -37,8 +37,22 @@ _CHOWN_ROOT = re.compile(r"\bchown\b\s+-R\s+\S+\s+/(?:\s|$)")
 _POWER = re.compile(r"\b(shutdown|reboot|halt|poweroff)\b", re.IGNORECASE)
 _REDIR_DEVICE = re.compile(r">\s*/dev/(sda|sdb|hda|nvme|xvd)")
 
+_POWERSHELL_REMOVE = re.compile(
+    r"\bRemove-Item\b[^;|&]*?-Recurse\b[^;|&]*?"
+    r"(?:[A-Za-z]:\\?|/|~|\$env:USERPROFILE|\$HOME|\$env:SystemDrive)",
+    re.IGNORECASE,
+)
+_RM_RF_ENV = re.compile(
+    r"\brm\b\s+(?:-[frR]+\s+|--recursive\s+|--force\s+)+"
+    r"(?:\$env:\w+|\$\{?HOME\}?|%[A-Za-z_][A-Za-z0-9_]*%|\$USERPROFILE)"
+)
+_POWERSHELL_FORMAT = re.compile(r"\bFormat-Volume\b", re.IGNORECASE)
+
 _SEGMENT_PATTERNS = [
     (_RM_RF_PROTECTED, "rm -rf on protected path"),
+    (_RM_RF_ENV, "rm -rf on env-var path"),
+    (_POWERSHELL_REMOVE, "PowerShell Remove-Item -Recurse on protected path"),
+    (_POWERSHELL_FORMAT, "PowerShell Format-Volume"),
     (_RMDIR_DRIVE, "rmdir /s on drive root"),
     (_DEL_DRIVE, "del /s /q on drive root"),
     (_FORMAT_DRIVE, "format drive"),
