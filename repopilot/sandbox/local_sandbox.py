@@ -5,6 +5,8 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import signal
 import time
 from pathlib import Path
 from typing import Optional
@@ -18,6 +20,39 @@ from repopilot.sandbox.base import (
     Sandbox,
 )
 
+
+
+
+def _terminate_tree(proc):
+    """Best-effort process-group / job-object terminate then kill escalation."""
+    if proc.poll() is not None:
+        return
+    try:
+        if sys.platform == "win32":
+            try:
+                proc.send_signal(signal.CTRL_BREAK_EVENT)
+            except Exception:
+                proc.terminate()
+        else:
+            import os as _os
+            try:
+                _os.killpg(_os.getpgid(proc.pid), signal.SIGTERM)
+            except Exception:
+                proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            pass
+    finally:
+        if proc.poll() is None:
+            try:
+                if sys.platform != "win32":
+                    import os as _os
+                    _os.killpg(_os.getpgid(proc.pid), signal.SIGKILL)
+                else:
+                    proc.kill()
+            except Exception:
+                pass
 
 class LocalSandbox(Sandbox):
     """Sandbox that operates directly on the local filesystem.
@@ -115,40 +150,74 @@ class LocalSandbox(Sandbox):
 
     # ── exec ──────────────────────────────────────
     def exec(self, command: str, timeout: int = 30, cwd: Optional[str] = None) -> ExecResult:
+        """Run ``command`` in a child process, cancellable via Ctrl-C.
+
+        The child is launched in its own process group / session so that a
+        KeyboardInterrupt to the Python REPL can be propagated to *all*
+        descendants (e.g. ``bash -c "sleep 60 & wait"``).  On timeout or
+        interrupt we send a graceful terminate first, then hard-kill after
+        a 2-second grace window.
+        """
         workdir = str(self.repo_path)
         if cwd:
             workdir = str(self._safe_path(cwd))
         t0 = time.time()
+
+        popen_kwargs = dict(
+            shell=True,
+            cwd=workdir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if sys.platform == "win32":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+
+        try:
+            proc = subprocess.Popen(command, **popen_kwargs)
+        except Exception as e:
+            return ExecResult(
+                command=command, stdout="", stderr=f"failed to spawn: {e}",
+                exit_code=-1, timed_out=False, interrupted=False,
+                duration_ms=int((time.time() - t0) * 1000),
+            )
+
         timed_out = False
+        interrupted = False
         stdout = ""
         stderr = ""
         exit_code = 0
         try:
-            # On Windows shell=True is needed for builtins; use cmd /c
-            result = subprocess.run(
-                command,
-                shell=True,
-                cwd=workdir,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                encoding="utf-8",
-                errors="replace",
-            )
-            stdout = result.stdout or ""
-            stderr = result.stderr or ""
-            exit_code = result.returncode
-        except subprocess.TimeoutExpired as e:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            exit_code = proc.returncode
+        except subprocess.TimeoutExpired:
             timed_out = True
-            stdout = (e.stdout or b"").decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
-            stderr = (e.stderr or b"").decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
-            exit_code = -1
+            _terminate_tree(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=2)
+            except Exception:
+                stdout, stderr = (stdout or ""), (stderr or "")
+            exit_code = proc.returncode if proc.returncode is not None else -1
+        except KeyboardInterrupt:
+            interrupted = True
+            _terminate_tree(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=2)
+            except Exception:
+                stdout, stderr = (stdout or ""), (stderr or "")
+            exit_code = proc.returncode if proc.returncode is not None else -2
+
         return ExecResult(
             command=command,
-            stdout=stdout,
-            stderr=stderr,
+            stdout=stdout or "",
+            stderr=stderr or "",
             exit_code=exit_code,
             timed_out=timed_out,
+            interrupted=interrupted,
             duration_ms=int((time.time() - t0) * 1000),
         )
 

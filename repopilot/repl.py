@@ -521,7 +521,15 @@ class ReplSession:
                             })
 
                         is_error = bool(tool_result.error)
-                        _abort = loop_guard.record_result(getattr(tool_result, "error_code", None) if is_error else None)
+                        # Ctrl-C during a tool must exit the turn cleanly, not
+                        # trigger loop_guard or feed error back for another round.
+                        _ec = getattr(tool_result, "error_code", None)
+                        if _ec == "E_INTERRUPTED":
+                            self.ctx.add_tool_result(call_id, result_str, is_error=True)
+                            self.console.print(f"[yellow]Task interrupted by user.[/yellow]")
+                            interrupt = True
+                            break
+                        _abort = loop_guard.record_result(_ec if is_error else None)
                         self.ctx.add_tool_result(call_id, result_str, is_error=is_error)
 
                         status_icon = "[red]x[/red]" if is_error else "[green]OK[/green]"

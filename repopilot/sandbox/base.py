@@ -15,6 +15,7 @@ class ExecResult:
     stderr: str = ""
     exit_code: int = 0
     timed_out: bool = False
+    interrupted: bool = False
     duration_ms: int = 0
 
     @property

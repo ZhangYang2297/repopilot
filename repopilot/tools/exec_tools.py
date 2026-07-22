@@ -77,6 +77,11 @@ class BashTool(Tool):
             "duration_ms": result.duration_ms,
             "stdout_bytes": len(result.stdout or ""),
         }
+        if getattr(result, "interrupted", False):
+            output += "\n[command interrupted by user (Ctrl-C)]"
+            return ToolResult(content=output, error="Interrupted by user",
+                              error_code=ToolErrorCode.INTERRUPTED.value, retryable=False, metadata=meta,
+                              duration_ms=result.duration_ms)
         if result.timed_out:
             output += f"\n[command timed out after {timeout}s — try increasing timeout parameter]"
             return ToolResult(content=output, error=f"Command timed out after {timeout}s",
@@ -198,6 +203,11 @@ class RunPythonTool(Tool):
             "duration_ms": result.duration_ms,
             "stdout_bytes": len(result.stdout or ""),
         }
+        if getattr(result, "interrupted", False):
+            output += "\n[script interrupted by user (Ctrl-C)]"
+            return ToolResult(content=output, error="Interrupted by user",
+                              error_code=ToolErrorCode.INTERRUPTED.value, retryable=False, metadata=meta,
+                              duration_ms=result.duration_ms)
         if result.timed_out:
             output += f"\n[script timed out after {timeout}s]"
             return ToolResult(content=output, error=f"Script timed out after {timeout}s",
