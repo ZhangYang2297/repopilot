@@ -844,9 +844,7 @@ def run_repl(
                 repl.do_undo(arg)
             elif cmd == "/cost":
                 ct = repl.cost_tracker
-                console.print(f"Tokens: {ct.total_input_tokens}in + {ct.total_output_tokens}out")
-                console.print(f"Cost:   ${ct.total_cost:.4f}")
-                console.print(f"Calls:  {ct.llm_calls} LLM / {ct.tool_calls} tools")
+                console.print(ct.format_summary())
             elif cmd == "/status":
                 console.print(f"  Directory: [cyan]{repl.repo_path}[/cyan]")
                 console.print(f"  Model:     [cyan]{settings.model}[/cyan]")
