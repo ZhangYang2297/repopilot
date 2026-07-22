@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from repopilot.code_index.ignore import iter_source_files, is_ignored, SOURCE_EXTENSIONS
+from repopilot.code_index.ignore import iter_source_files, iter_all_files, is_ignored, SOURCE_EXTENSIONS
 from repopilot.code_index.symbol_index import index_file, format_file_symbols, FileSymbols
 
 if TYPE_CHECKING:
@@ -68,7 +68,35 @@ class RepoMapBuilder:
             total_chars += section_chars
 
         header = f"# Repo Map: {self.repo_root.name}\n"
-        return header + "\n".join(sections)
+        body = header + "\n".join(sections)
+
+        # Also list non-source files (html/css/txt/json/etc.) so the model
+        # sees the *full* repo contents, not just code files.
+        try:
+            source_paths = {str(pp.relative_to(self.repo_root)).replace("\\", "/")
+                            for _sz, pp in files}
+            others: list[str] = []
+            for p2 in iter_all_files(self.repo_root, max_files=500):
+                rel = str(p2.relative_to(self.repo_root)).replace("\\", "/")
+                if rel in source_paths:
+                    continue
+                others.append(rel)
+            if others:
+                remaining_chars = max_chars - len(body)
+                other_lines = ["", "## Other files"]
+                used = sum(len(x) + 3 for x in other_lines)
+                for rel in others:
+                    line = f"  {rel}"
+                    if used + len(line) + 1 > remaining_chars:
+                        other_lines.append(f"  ... (+{len(others) - (len(other_lines) - 2)} more)")
+                        break
+                    other_lines.append(line)
+                    used += len(line) + 1
+                body += "\n" + "\n".join(other_lines)
+        except Exception:
+            pass
+
+        return body
 
     def update(self, path: str) -> None:
         """Invalidate cache for a single file (after edits)."""

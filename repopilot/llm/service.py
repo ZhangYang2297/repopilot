@@ -105,6 +105,7 @@ class LLMService:
             messages=messages,
             temperature=temperature,
             timeout=self.TIER_TIMEOUTS[tier],
+            max_tokens=16384,
         )
         if tools:
             kwargs["tools"] = tools
@@ -164,6 +165,7 @@ class LLMService:
             messages=messages,
             temperature=temperature,
             timeout=self.TIER_TIMEOUTS[tier],
+            max_tokens=16384,
             stream=True,
         )
         if tools:
@@ -236,7 +238,15 @@ class LLMService:
                             }
                         fn = getattr(tc_delta, "function", None)
                         if fn:
-                            if getattr(fn, "name", None):
+                            if getattr(fn, "name", None) and not tool_calls[idx]["name"]:
+                                tool_calls[idx]["name"] = fn.name
+                                yield {
+                                    "type": "tool_call_partial",
+                                    "index": idx,
+                                    "name": fn.name,
+                                    "id": tool_calls[idx]["id"],
+                                }
+                            elif getattr(fn, "name", None):
                                 tool_calls[idx]["name"] = fn.name
                             if getattr(fn, "arguments", None):
                                 tool_calls[idx]["arguments_raw"] += fn.arguments

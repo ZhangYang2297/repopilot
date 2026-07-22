@@ -119,3 +119,39 @@ def iter_source_files(repo_root: Path, max_files: int = 500) -> Iterable[Path]:
             continue
         yield p
         count += 1
+
+
+
+def iter_all_files(repo_root: Path, max_files: int = 1000):
+    """Yield ALL non-ignored file paths (any extension).
+
+    Ignores by directory rules (BUILTIN_IGNORE + .gitignore) but does NOT
+    filter by SOURCE_EXTENSIONS.  Used for listing repo contents to the
+    model, similar to ``rg --files`` output.
+    """
+    count = 0
+    root = Path(repo_root).resolve()
+    spec = _load_gitignore(root)
+    for p in sorted(root.rglob("*")):
+        if count >= max_files:
+            break
+        if not p.is_file():
+            continue
+        try:
+            rel = str(p.relative_to(root)).replace("\\", "/")
+        except ValueError:
+            continue
+        # Directory / builtin pattern ignores (skip common junk)
+        skip = False
+        for pat in BUILTIN_IGNORE:
+            if pat.endswith("/"):
+                if rel.startswith(pat) or "/" + pat in rel:
+                    skip = True; break
+            elif pat.startswith("*.") and rel.endswith(pat[1:]):
+                skip = True; break
+        if skip:
+            continue
+        if spec and spec.match_file(rel):
+            continue
+        yield p
+        count += 1

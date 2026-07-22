@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Optional
 
 from rich.console import Console
-from rich.live import Live
 from rich.markdown import Markdown
 from rich.prompt import Prompt, Confirm
 from rich.syntax import Syntax
@@ -28,6 +27,7 @@ from repopilot.agent.loop import _load_system_prompt, _register_default_tools
 from repopilot.agent.compact import tool_compact
 from repopilot.agent.engine import AgentLoopCore
 from repopilot.agent.diff_tracker import DiffTracker
+from repopilot.agent.tool_display import format_tool_line, format_result_suffix
 from repopilot.tools.base import ApprovalRequired
 from repopilot.tools.result import ToolResult
 from repopilot.memory import load_memory, create_global_memory, append_to_project_memory, append_to_global_memory
@@ -271,6 +271,7 @@ class ReplSession:
             self.console.print("[dim]Nothing to undo.[/dim]")
 
     def run_turn(self, user_message: str) -> bool:
+        _turn_t0 = time.perf_counter()
         self.ctx.add_user(user_message)
         if self.session_store:
             self.session_store.append_event(self.session_id, "user_msg", {"content": user_message})
@@ -379,8 +380,34 @@ class ReplSession:
                             self.ctx.add_assistant(final_answer)
                             return True
 
-                        arg_str = ", ".join(f"[dim]{k}=[/dim]{str(v)[:40]}" for k, v in tool_args.items())
-                        self.console.print(f"[cyan]> {tool_name}[/cyan]([dim]{arg_str}[/dim])")
+                        # Malformed tool_call arguments (JSON truncated / unparseable).
+                        # Do NOT invoke the tool with a garbage payload; feed a
+                        # synthetic tool_result so the model can retry with a
+                        # smaller or corrected argument set.
+                        if isinstance(tool_args, dict) and "_raw" in tool_args and len(tool_args) == 1:
+                            self.console.print(
+                                f"[yellow]! {tool_name}: tool_call arguments were incomplete "
+                                f"(model output truncated). Asking model to retry with smaller output.[/yellow]"
+                            )
+                            err_msg = (
+                                "Error: tool_call arguments were incomplete or malformed JSON "
+                                "(likely output truncated by max_tokens). "
+                                "Retry with a smaller payload — e.g. write shorter files, or split "
+                                "the write into multiple write_file / edit_file calls."
+                            )
+                            self.ctx.add_tool_result(call_id, err_msg, is_error=True)
+                            if self.session_store:
+                                self.session_store.append_event(self.session_id, "tool_result", {
+                                    "tool": tool_name, "call_id": call_id,
+                                    "content": err_msg, "error": err_msg,
+                                    "metadata": {"reason": "malformed_arguments"},
+                                    "duration_ms": 0,
+                                })
+                            continue
+
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                        self.console.print(format_tool_line(tool_name, tool_args))
 
                         if self.session_store:
                             self.session_store.append_event(self.session_id, "tool_call", {
@@ -428,7 +455,8 @@ class ReplSession:
                         self.ctx.add_tool_result(call_id, result_str, is_error=is_error)
 
                         status_icon = "[red]x[/red]" if is_error else "[green]OK[/green]"
-                        self.console.print(f"  {status_icon} [dim]{tool_name} ({elapsed:.1f}s)[/dim]")
+                        _suffix = format_result_suffix(tool_name, tool_args, getattr(tool_result, "metadata", None))
+                        self.console.print(f"  [dim]└[/dim] {status_icon} [dim]({elapsed:.1f}s)[/dim]{_suffix}")
                         if is_error:
                             self.console.print(f"[red]  {result_str[:200]}[/red]")
                         elif self.verbose:
@@ -444,13 +472,16 @@ class ReplSession:
                 break
 
         if final_answer:
-            self.console.print()
-            try:
-                self.console.print(Markdown(final_answer))
-            except Exception:
-                self.console.print(final_answer)
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            if not self._streamed_answer:
+                try:
+                    self.console.print(Markdown(final_answer))
+                except Exception:
+                    self.console.print(final_answer)
         self._streamed_answer = False
-        self.console.print()
+        _turn_elapsed = time.perf_counter() - _turn_t0
+        self.console.print(f"[dim]Turn: {_turn_elapsed:.1f}s[/dim]")
         if interrupt:
             self.console.print("[yellow]Task interrupted.[/yellow]")
         return not interrupt
@@ -460,9 +491,9 @@ class ReplSession:
         tool_calls = []
         usage = {}
         got_tool_delta = False
-        live = None
-        thinking_status = None
+        first_token = True
         self._streamed_answer = False
+        thinking_status = None
         try:
             thinking_status = self.console.status("[dim]Thinking...[/dim]", spinner="dots")
             thinking_status.start()
@@ -473,29 +504,45 @@ class ReplSession:
                 temperature=0.2,
             )
             for event in gen:
-                if thinking_status is not None:
-                    thinking_status.stop()
-                    thinking_status = None
                 etype = event.get("type") if isinstance(event, dict) else None
                 if etype == "text_delta":
-                    accumulated += event.get("content", "")
-                    if not got_tool_delta:
-                        if live is None:
-                            try:
-                                live = Live(accumulated,
-                                            console=self.console,
-                                            refresh_per_second=10,
-                                            transient=True)
-                                live.__enter__()
-                                self._streamed_answer = True
-                            except Exception:
-                                live = None
-                        else:
-                            try:
-                                live.update(accumulated)
-                            except Exception:
-                                pass
+                    chunk = event.get("content", "")
+                    accumulated += chunk
+                    if not got_tool_delta and chunk:
+                        if first_token:
+                            if thinking_status is not None:
+                                try:
+                                    thinking_status.stop()
+                                except Exception:
+                                    pass
+                                thinking_status = None
+                            first_token = False
+                        sys.stdout.write(chunk)
+                        sys.stdout.flush()
+                        self._streamed_answer = True
+                elif etype == "tool_call_partial":
+                    # Swap "Thinking..." to a per-tool progress spinner so the user
+                    # sees that a long-running tool_call is being generated by the
+                    # model (e.g. write_file with a huge content argument).
+                    got_tool_delta = True
+                    if thinking_status is not None:
+                        try:
+                            thinking_status.stop()
+                        except Exception:
+                            pass
+                    tname = event.get("name", "tool")
+                    thinking_status = self.console.status(
+                        f"[cyan]> {tname}[/cyan] [dim]working...[/dim]",
+                        spinner="dots",
+                    )
+                    thinking_status.start()
                 elif etype == "tool_call":
+                    if thinking_status is not None:
+                        try:
+                            thinking_status.stop()
+                        except Exception:
+                            pass
+                        thinking_status = None
                     got_tool_delta = True
                     tool_calls.append({
                         "id": event.get("id", ""),
@@ -515,11 +562,9 @@ class ReplSession:
                     thinking_status.stop()
                 except Exception:
                     pass
-            if live is not None:
-                try:
-                    live.__exit__(None, None, None)
-                except Exception:
-                    pass
+        if self._streamed_answer:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
         if tool_calls:
             self._streamed_answer = False
         return accumulated, (tool_calls if tool_calls else None), usage
@@ -669,7 +714,7 @@ def run_repl(
                             # Update session cwd, keep conversation history
                             session = session_store.get(repl.session_id)
                             if session:
-                                session_store.append_event(repl.session_id, "info", {"cd": str(p), "from": str(old_path)})
+                                session_store.append_event(repl.session_id, "system", {"cd": str(p), "from": str(old_path)})
                     else:
                         console.print(f"[red]Not a directory: {p}[/red]")
                 else:

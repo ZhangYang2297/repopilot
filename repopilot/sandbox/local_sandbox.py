@@ -258,10 +258,19 @@ class LocalSandbox(Sandbox):
             return self._fallback_repo_tree(max_tokens)
 
     def _fallback_repo_tree(self, max_tokens: int = 4000) -> str:
-        """Simple recursive file listing fallback when tree-sitter is unavailable."""
-        all_files = []
-        for pat in ["**/*.py", "**/*.js", "**/*.ts", "**/*.md", "**/*.txt", "**/*.toml", "**/*.yaml", "**/*.json"]:
-            all_files.extend(self.glob(pat))
+        """List ALL non-ignored files (any extension), similar to ``rg --files``.
+
+        Previously restricted to a whitelist of source extensions which
+        silently hid html/css/vue/txt/... files from the model.
+        """
+        try:
+            from repopilot.code_index.ignore import iter_all_files
+            all_files = [
+                str(p.relative_to(self.repo_path)).replace("\\", "/")
+                for p in iter_all_files(self.repo_path, max_files=500)
+            ]
+        except Exception:
+            all_files = self.glob("**/*")
         all_files = sorted(set(all_files))
         lines = [f"# Repo tree: {self.repo_path.name}", ""]
         lines.append("Files:")
