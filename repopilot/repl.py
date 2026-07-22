@@ -58,11 +58,13 @@ class ReplInput:
 
     def ask_user(self) -> Optional[str]:
         if self._is_tty:
-            # Codex/Claude-code style single-glyph prompt.  Console.input
-            # avoids the ": " suffix that Prompt.ask would append.
             if not hasattr(self, "_console"):
                 self._console = Console()
-            return self._console.input("[bold cyan]>[/bold cyan] ")
+            # Rule line separates each turn visually (Codex-CLI style).
+            # Prompt label restored to "repopilot:" so the input row is
+            # obviously distinct from assistant output.
+            self._console.rule(style="dim")
+            return self._console.input("[bold green]repopilot:[/bold green] ")
         return self._queue.popleft() if self._queue else None
 
     def ask_approval(self) -> str:
@@ -762,6 +764,7 @@ def run_repl(
     )
 
     input_source = ReplInput(is_tty=sys.stdin.isatty())
+    input_source._console = console
     repl.input_source = input_source
 
     while True:
