@@ -58,9 +58,11 @@ class ReplInput:
 
     def ask_user(self) -> Optional[str]:
         if self._is_tty:
-            return Prompt.ask(
-                "[bold green]repopilot[/bold green]", default="", show_default=False
-            )
+            # Codex/Claude-code style single-glyph prompt.  Console.input
+            # avoids the ": " suffix that Prompt.ask would append.
+            if not hasattr(self, "_console"):
+                self._console = Console()
+            return self._console.input("[bold cyan]>[/bold cyan] ")
         return self._queue.popleft() if self._queue else None
 
     def ask_approval(self) -> str:
@@ -739,14 +741,17 @@ def run_repl(
     session_store = SessionStore(sessions_dir=settings.sessions_dir)
     session = session_store.create(title=f"REPL: {repo_path.name}", cwd=str(repo_path), model=settings.model)
 
+    from repopilot import __version__ as _rp_version
     console.print()
-    console.rule("[bold green]RepoPilot[/bold green]")
-    console.print(f"  Directory: [cyan]{repo_path}[/cyan]")
-    console.print(f"  Model:     [cyan]{settings.model}[/cyan]")
-    console.print(f"  Sandbox:   [cyan]{sandbox_type}[/cyan]")
-    console.print(f"  Approval:  [cyan]{approval_mode}[/cyan]")
+    console.rule(f"[bold green]RepoPilot[/bold green] [dim]v{_rp_version}[/dim]")
+    console.print(f"  [dim]cwd     [/dim] [cyan]{repo_path}[/cyan]")
+    console.print(f"  [dim]model   [/dim] [cyan]{settings.model}[/cyan]")
+    console.print(f"  [dim]sandbox [/dim] [cyan]{sandbox_type}[/cyan]   [dim]approval[/dim] [cyan]{approval_mode}[/cyan]")
     console.print()
-    console.print("[dim]Type /help for commands, /exit to quit. Press Ctrl+C to interrupt.[/dim]")
+    console.print(
+        "  [dim]/help  /diff  /undo  /cd  /cost  /clear  /exit"
+        "     (Ctrl+C to interrupt)[/dim]"
+    )
     console.print()
 
     repl = ReplSession(
