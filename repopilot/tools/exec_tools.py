@@ -6,7 +6,8 @@ import uuid as _uuid
 from typing import TYPE_CHECKING, Any
 
 from repopilot.tools.base import Tool, TIER_EXEC
-from repopilot.tools.result import ToolResult, truncate_text
+from repopilot.tools.errors import ToolErrorCode
+from repopilot.tools.result import ToolResult, truncate_text, error_result
 
 if TYPE_CHECKING:
     from repopilot.sandbox.base import Sandbox
@@ -54,7 +55,7 @@ class BashTool(Tool):
     def execute(self, args: dict[str, Any], sandbox: "Sandbox", extra=None) -> ToolResult:
         cmd = args.get("command", "").strip()
         if not cmd:
-            return ToolResult(error="bash requires 'command' argument")
+            return error_result("bash requires 'command' argument", ToolErrorCode.INVALID_ARGS)
         timeout = min(int(args.get("timeout", self.DEFAULT_TIMEOUT)), self.MAX_TIMEOUT)
         cwd = args.get("cwd")
 
@@ -65,19 +66,27 @@ class BashTool(Tool):
         try:
             result = sandbox.exec(cmd, timeout=timeout, cwd=cwd)
         except PermissionError as e:
-            return ToolResult(error=str(e))
+            return error_result(str(e), ToolErrorCode.PERMISSION)
         except Exception as e:
-            return ToolResult(error=f"{type(e).__name__}: {e}")
+            return error_result(f"{type(e).__name__}: {e}", ToolErrorCode.SANDBOX)
 
         output = result.truncated(head=2000, tail=5000)
         meta = {
             "exit_code": result.exit_code,
             "timed_out": result.timed_out,
             "duration_ms": result.duration_ms,
+            "stdout_bytes": len(result.stdout or ""),
         }
         if result.timed_out:
             output += f"\n[command timed out after {timeout}s — try increasing timeout parameter]"
-        return ToolResult(content=output, metadata=meta)
+            return ToolResult(content=output, error=f"Command timed out after {timeout}s",
+                              error_code=ToolErrorCode.TIMEOUT.value, retryable=True, metadata=meta,
+                              duration_ms=result.duration_ms)
+        if result.exit_code != 0:
+            return ToolResult(content=output, error=f"Command exited with code {result.exit_code}",
+                              error_code=ToolErrorCode.EXEC_FAILED.value, retryable=False, metadata=meta,
+                              duration_ms=result.duration_ms)
+        return ToolResult(content=output, metadata=meta, duration_ms=result.duration_ms)
 
 
 def _windows_cmd_fix(cmd: str) -> str:
@@ -154,7 +163,7 @@ class RunPythonTool(Tool):
     def execute(self, args: dict[str, Any], sandbox: "Sandbox", extra=None) -> ToolResult:
         code = args.get("code", "")
         if not code:
-            return ToolResult(error="run_python requires 'code' argument")
+            return error_result("run_python requires 'code' argument", ToolErrorCode.INVALID_ARGS)
         timeout = min(int(args.get("timeout", self.DEFAULT_TIMEOUT)), self.MAX_TIMEOUT)
 
         tmp_name = f"_runpy_{_uuid.uuid4().hex[:8]}.py"
@@ -163,13 +172,13 @@ class RunPythonTool(Tool):
             sandbox.write_file(tmp_name, code)
             tmp_host_path = sandbox.repo_path / tmp_name
         except Exception as e:
-            return ToolResult(error=f"Failed to write temp script: {e}")
+            return error_result(f"Failed to write temp script: {e}", ToolErrorCode.SANDBOX)
         try:
             result = sandbox.exec(f"python {tmp_name}", timeout=timeout)
         except PermissionError as e:
-            return ToolResult(error=str(e))
+            return error_result(str(e), ToolErrorCode.PERMISSION)
         except Exception as e:
-            return ToolResult(error=f"{type(e).__name__}: {e}")
+            return error_result(f"{type(e).__name__}: {e}", ToolErrorCode.SANDBOX)
         finally:
             if tmp_host_path and tmp_host_path.exists():
                 try:
@@ -187,7 +196,15 @@ class RunPythonTool(Tool):
             "exit_code": result.exit_code,
             "timed_out": result.timed_out,
             "duration_ms": result.duration_ms,
+            "stdout_bytes": len(result.stdout or ""),
         }
         if result.timed_out:
             output += f"\n[script timed out after {timeout}s]"
-        return ToolResult(content=output, metadata=meta)
+            return ToolResult(content=output, error=f"Script timed out after {timeout}s",
+                              error_code=ToolErrorCode.TIMEOUT.value, retryable=True, metadata=meta,
+                              duration_ms=result.duration_ms)
+        if result.exit_code != 0:
+            return ToolResult(content=output, error=f"Script exited with code {result.exit_code}",
+                              error_code=ToolErrorCode.EXEC_FAILED.value, metadata=meta,
+                              duration_ms=result.duration_ms)
+        return ToolResult(content=output, metadata=meta, duration_ms=result.duration_ms)

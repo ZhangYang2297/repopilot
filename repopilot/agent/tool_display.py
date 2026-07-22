@@ -76,15 +76,56 @@ def format_tool_line(tool_name: str, args: dict) -> str:
 
 
 def format_result_suffix(tool_name: str, args: dict, result_metadata: Optional[dict]) -> str:
-    """Optional extra info appended to the OK line, e.g. ``(+12 -3)`` for edits."""
+    """Extra info appended to the OK line, e.g. ``(+12 -3)`` for edits.
+
+    Reads the metadata contract set by each tool (see repopilot/tools/*).
+    Returns an empty string when no interesting metadata is present.
+    """
     md = result_metadata or {}
     if tool_name == "edit_file":
-        added = md.get("added_lines") or md.get("insertions")
-        removed = md.get("removed_lines") or md.get("deletions")
-        if added is not None or removed is not None:
-            return f" [dim](+{added or 0} -{removed or 0})[/dim]"
+        added = md.get("added_lines", 0)
+        removed = md.get("removed_lines", 0)
+        if added or removed:
+            return f" [dim](+{added} -{removed})[/dim]"
+        return ""
     if tool_name == "read_file":
-        n = md.get("lines") or md.get("line_count")
-        if n:
-            return f" [dim]({n} lines)[/dim]"
+        shown = md.get("lines_shown")
+        total = md.get("total_lines")
+        if shown is not None and total is not None and shown < total:
+            return f" [dim]({shown}/{total} lines)[/dim]"
+        if total is not None:
+            return f" [dim]({total} lines)[/dim]"
+        return ""
+    if tool_name == "write_file":
+        n = md.get("lines_written")
+        if n is not None:
+            tag = "created" if md.get("created") else "overwrote"
+            return f" [dim]({tag}, {n} lines)[/dim]"
+        return ""
+    if tool_name in ("bash", "run_python"):
+        rc = md.get("exit_code")
+        if rc is not None and rc != 0:
+            return f" [dim](exit {rc})[/dim]"
+        return ""
+    if tool_name == "grep":
+        mc = md.get("match_count")
+        fc = md.get("file_count")
+        if mc is not None:
+            return f" [dim]({mc} matches in {fc or 0} files)[/dim]"
+        return ""
+    if tool_name == "glob":
+        n = md.get("file_count")
+        if n is not None:
+            return f" [dim]({n} files)[/dim]"
+        return ""
+    if tool_name == "list_dir":
+        d = md.get("dir_count", 0); f = md.get("file_count", 0)
+        if d or f:
+            return f" [dim]({d} dirs, {f} files)[/dim]"
+        return ""
+    if tool_name == "get_repo_tree":
+        s2 = md.get("source_files"); o = md.get("other_files")
+        if s2 is not None:
+            return f" [dim]({s2} src, {o or 0} other)[/dim]"
+        return ""
     return ""

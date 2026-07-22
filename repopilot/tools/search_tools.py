@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from repopilot.tools.base import Tool, TIER_READONLY
-from repopilot.tools.result import ToolResult, truncate_text
+from repopilot.tools.errors import ToolErrorCode
+from repopilot.tools.result import ToolResult, truncate_text, error_result
 
 if TYPE_CHECKING:
     from repopilot.sandbox.base import Sandbox
@@ -46,7 +47,7 @@ class GrepTool(Tool):
     def execute(self, args: dict[str, Any], sandbox: "Sandbox", extra=None) -> ToolResult:
         pattern = args.get("pattern", "")
         if not pattern:
-            return ToolResult(error="grep requires 'pattern'")
+            return error_result("grep requires 'pattern'", ToolErrorCode.INVALID_ARGS)
         glob_filter = args.get("glob") or None
         ignore_case = bool(args.get("ignore_case", False))
         search_path = args.get("path", ".")
@@ -57,9 +58,9 @@ class GrepTool(Tool):
         try:
             matches = sandbox.grep(pattern, glob_filter=glob_filter, ignore_case=ignore_case)
         except ValueError as e:
-            return ToolResult(error=str(e))
+            return error_result(str(e), ToolErrorCode.INVALID_ARGS)
         except Exception as e:
-            return ToolResult(error=f"{type(e).__name__}: {e}")
+            return error_result(f"{type(e).__name__}: {e}", ToolErrorCode.SANDBOX)
 
         # Filter by search_path if not "."
         if search_path and search_path != ".":
@@ -84,7 +85,7 @@ class GrepTool(Tool):
             shown += 1
         return ToolResult(
             content=truncate_text("\n".join(lines), head=500, tail=3000),
-            metadata={"match_count": len(matches)},
+            metadata={"match_count": len(matches), "file_count": len({m.file for m in matches})},
         )
 
 
@@ -116,7 +117,7 @@ class GlobTool(Tool):
         pattern = args.get("pattern", "")
         search_path = args.get("path", ".")
         if not pattern:
-            return ToolResult(error="glob requires 'pattern'")
+            return error_result("glob requires 'pattern'", ToolErrorCode.INVALID_ARGS)
 
         # If path is specified, prepend it to the pattern for subdirectory search
         full_pattern = pattern
@@ -174,14 +175,31 @@ class ListDirTool(Tool):
         try:
             tree = sandbox.list_dir(path, max_depth=depth)
         except PermissionError as e:
-            return ToolResult(error=str(e))
+            return error_result(str(e), ToolErrorCode.PERMISSION, path=path)
+        except FileNotFoundError:
+            return error_result(f"Directory not found: {path}", ToolErrorCode.NOT_FOUND, path=path)
         except Exception as e:
-            return ToolResult(error=f"{type(e).__name__}: {e}")
+            return error_result(f"{type(e).__name__}: {e}", ToolErrorCode.SANDBOX, path=path)
         if not tree:
-            return ToolResult(content=f"Directory not found or empty: {path}")
+            return ToolResult(content=f"Directory not found or empty: {path}",
+                              metadata={"path": path, "entry_count": 0, "dir_count": 0, "file_count": 0})
         lines = [f"Directory: {path}\n"]
         self._render(tree, lines, prefix="")
-        return ToolResult(content="\n".join(lines))
+
+        def _count(node):
+            dc = fc = 0
+            for _n, ch in node.items():
+                if isinstance(ch, dict):
+                    dc += 1
+                    sdc, sfc = _count(ch); dc += sdc; fc += sfc
+                else:
+                    fc += 1
+            return dc, fc
+        dc, fc = _count(tree)
+        return ToolResult(
+            content="\n".join(lines),
+            metadata={"path": path, "dir_count": dc, "file_count": fc, "entry_count": dc + fc},
+        )
 
     def _render(self, tree: dict, lines: list[str], prefix: str) -> None:
         items = list(tree.items())
@@ -217,5 +235,13 @@ class RepoTreeTool(Tool):
         try:
             tree = sandbox.get_repo_tree(max_tokens=max_tokens)
         except Exception as e:
-            return ToolResult(error=f"{type(e).__name__}: {e}")
-        return ToolResult(content=tree)
+            return error_result(f"{type(e).__name__}: {e}", ToolErrorCode.SANDBOX)
+        # Rough counts extracted from the tree text for the UI.
+        try:
+            src = tree.count("\n") - tree.count("## Other files")
+            other = 0
+            if "## Other files" in tree:
+                other = tree.split("## Other files", 1)[1].count("\n  ")
+        except Exception:
+            src = other = 0
+        return ToolResult(content=tree, metadata={"source_files": max(0, src), "other_files": other})

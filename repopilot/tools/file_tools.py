@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from repopilot.tools.base import Tool, TIER_READONLY, TIER_WRITE
-from repopilot.tools.result import ToolResult, truncate_text
+from repopilot.tools.errors import ToolErrorCode
+from repopilot.tools.result import ToolResult, truncate_text, error_result
 
 if TYPE_CHECKING:
     from repopilot.sandbox.base import Sandbox
@@ -19,20 +20,9 @@ class ReadFileTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "path": {
-                "type": "string",
-                "description": "File path relative to the repository root.",
-            },
-            "offset": {
-                "type": "integer",
-                "description": "0-based line offset to start reading from (default 0).",
-                "default": 0,
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Maximum number of lines to read (default 200, max 2000).",
-                "default": 200,
-            },
+            "path": {"type": "string", "description": "File path relative to the repository root."},
+            "offset": {"type": "integer", "description": "0-based line offset to start reading from (default 0).", "default": 0},
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default 200, max 2000).", "default": 200},
         },
         "required": ["path"],
     }
@@ -42,27 +32,36 @@ class ReadFileTool(Tool):
     def execute(self, args: dict[str, Any], sandbox: "Sandbox", extra=None) -> ToolResult:
         path = args.get("path", "")
         if not path:
-            return ToolResult(error="read_file requires 'path' argument")
+            return error_result("read_file requires 'path' argument", ToolErrorCode.INVALID_ARGS)
         offset = max(0, int(args.get("offset", 0)))
         limit = min(max(1, int(args.get("limit", 200))), self.MAX_LIMIT)
         try:
             result = sandbox.read_file(path, offset=offset, limit=limit)
         except FileNotFoundError:
-            return ToolResult(error=f"File not found: {path}")
+            return error_result(f"File not found: {path}", ToolErrorCode.NOT_FOUND, path=path)
         except PermissionError as e:
-            return ToolResult(error=str(e))
+            return error_result(str(e), ToolErrorCode.PERMISSION, path=path)
         except Exception as e:
-            return ToolResult(error=f"{type(e).__name__}: {e}")
+            return error_result(f"{type(e).__name__}: {e}", ToolErrorCode.INTERNAL, path=path)
 
         content = result.content
-        if result.truncated:
+        truncated = bool(result.truncated)
+        if truncated:
             next_offset = result.start_line + limit - 1
             content += (
                 f"\n...[file has {result.total_lines} lines, "
                 f"showing {result.start_line}-{result.start_line + limit - 1}. "
                 f"Use offset={next_offset} to continue]..."
             )
-        return ToolResult(content=content, metadata={"total_lines": result.total_lines, "path": path})
+        return ToolResult(
+            content=content,
+            metadata={
+                "path": path,
+                "total_lines": result.total_lines,
+                "lines_shown": min(result.total_lines - offset, limit),
+                "truncated": truncated,
+            },
+        )
 
 
 class WriteFileTool(Tool):
@@ -75,40 +74,49 @@ class WriteFileTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "path": {
-                "type": "string",
-                "description": "File path relative to the repository root.",
-            },
-            "content": {
-                "type": "string",
-                "description": "Complete file content to write.",
-            },
+            "path": {"type": "string", "description": "File path relative to the repository root."},
+            "content": {"type": "string", "description": "Complete file content to write."},
         },
         "required": ["path", "content"],
     }
     tier = TIER_WRITE
-    MAX_CONTENT = 100000  # 100KB sanity limit
+    MAX_CONTENT = 100000
 
     def execute(self, args: dict[str, Any], sandbox: "Sandbox", extra=None) -> ToolResult:
         path = args.get("path", "")
         content = args.get("content", "")
         if not path:
-            return ToolResult(error="write_file requires 'path'")
+            return error_result("write_file requires 'path'", ToolErrorCode.INVALID_ARGS)
         if not isinstance(content, str):
             content = str(content)
         if len(content) > self.MAX_CONTENT:
-            return ToolResult(
-                error=f"Content too large ({len(content)} chars, max {self.MAX_CONTENT}). "
-                      f"Use edit_file for targeted changes."
+            return error_result(
+                f"Content too large ({len(content)} chars, max {self.MAX_CONTENT}). "
+                f"Use edit_file for targeted changes.",
+                ToolErrorCode.SIZE_LIMIT,
+                path=path, bytes=len(content),
             )
+        existed = False
+        try:
+            existed = (sandbox.repo_path / path).exists()
+        except Exception:
+            pass
         try:
             sandbox.write_file(path, content)
         except PermissionError as e:
-            return ToolResult(error=str(e))
+            return error_result(str(e), ToolErrorCode.PERMISSION, path=path)
         except Exception as e:
-            return ToolResult(error=f"{type(e).__name__}: {e}")
-        lines = content.count("\n") + 1
-        return ToolResult(content=f"Wrote {lines} lines to {path}")
+            return error_result(f"{type(e).__name__}: {e}", ToolErrorCode.INTERNAL, path=path)
+        lines = content.count("\n") + 1 if content else 0
+        return ToolResult(
+            content=f"Wrote {lines} lines to {path}",
+            metadata={
+                "path": path,
+                "lines_written": lines,
+                "bytes_written": len(content),
+                "created": not existed,
+            },
+        )
 
 
 class EditFileTool(Tool):
@@ -122,23 +130,10 @@ class EditFileTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "path": {
-                "type": "string",
-                "description": "File path relative to the repository root.",
-            },
-            "old_string": {
-                "type": "string",
-                "description": "Exact text to find and replace.",
-            },
-            "new_string": {
-                "type": "string",
-                "description": "Replacement text.",
-            },
-            "replace_all": {
-                "type": "boolean",
-                "description": "Replace all occurrences instead of just the first (default false).",
-                "default": False,
-            },
+            "path": {"type": "string", "description": "File path relative to the repository root."},
+            "old_string": {"type": "string", "description": "Exact text to find and replace."},
+            "new_string": {"type": "string", "description": "Replacement text."},
+            "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of just the first (default false).", "default": False},
         },
         "required": ["path", "old_string", "new_string"],
     }
@@ -150,21 +145,49 @@ class EditFileTool(Tool):
         new = args.get("new_string", "")
         replace_all = bool(args.get("replace_all", False))
         if not path:
-            return ToolResult(error="edit_file requires 'path'")
+            return error_result("edit_file requires 'path'", ToolErrorCode.INVALID_ARGS)
         if old == new:
-            return ToolResult(error="old_string and new_string are identical; no change needed")
+            return error_result("old_string and new_string are identical; no change needed",
+                                ToolErrorCode.INVALID_ARGS, path=path)
         if not old:
-            return ToolResult(error="old_string cannot be empty; use write_file to create new files")
+            return error_result("old_string cannot be empty; use write_file to create new files",
+                                ToolErrorCode.INVALID_ARGS, path=path)
         try:
             diff = sandbox.edit_file(path, old, new, replace_all=replace_all)
         except FileNotFoundError:
-            return ToolResult(error=f"File not found: {path}")
+            return error_result(f"File not found: {path}", ToolErrorCode.NOT_FOUND, path=path)
         except ValueError as e:
-            return ToolResult(error=f"Edit failed: {e}")
+            msg = str(e)
+            if "not found" in msg.lower():
+                code = ToolErrorCode.NOT_MATCHED
+            elif "appears" in msg and "times" in msg:
+                code = ToolErrorCode.AMBIGUOUS
+            elif "too short" in msg.lower():
+                code = ToolErrorCode.INVALID_ARGS
+            else:
+                code = ToolErrorCode.INVALID_ARGS
+            return error_result(f"Edit failed: {msg}", code, path=path)
         except PermissionError as e:
-            return ToolResult(error=str(e))
+            return error_result(str(e), ToolErrorCode.PERMISSION, path=path)
         except Exception as e:
-            return ToolResult(error=f"{type(e).__name__}: {e}")
+            return error_result(f"{type(e).__name__}: {e}", ToolErrorCode.INTERNAL, path=path)
+
+        # Count added/removed lines from unified diff for metadata.
+        added = removed = 0
+        for line in diff.splitlines():
+            if line.startswith("+") and not line.startswith("+++"):
+                added += 1
+            elif line.startswith("-") and not line.startswith("---"):
+                removed += 1
+
         truncated_diff = truncate_text(diff, head=500, tail=2000)
         scope = "all occurrences" if replace_all else "1 occurrence"
-        return ToolResult(content=f"Applied edit to {path} ({scope}):\n{truncated_diff}")
+        return ToolResult(
+            content=f"Applied edit to {path} ({scope}):\n{truncated_diff}",
+            metadata={
+                "path": path,
+                "added_lines": added,
+                "removed_lines": removed,
+                "replaced_count": -1 if replace_all else 1,  # -1 = unknown/all
+            },
+        )
