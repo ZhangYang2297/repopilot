@@ -28,6 +28,7 @@ from repopilot.agent.compact import tool_compact
 from repopilot.agent.engine import AgentLoopCore
 from repopilot.agent.diff_tracker import DiffTracker
 from repopilot.agent.tool_display import format_tool_line, format_result_suffix
+from repopilot.agent.loop_guard import LoopGuard
 from repopilot.tools.base import ApprovalRequired
 from repopilot.tools.result import ToolResult
 from repopilot.memory import load_memory, create_global_memory, append_to_project_memory, append_to_global_memory
@@ -279,6 +280,7 @@ class ReplSession:
         interrupt = False
         final_answer = ""
         self._streamed_answer = False
+        loop_guard = LoopGuard()
 
         with self._make_sandbox() as sb:
             core = AgentLoopCore(
@@ -409,6 +411,25 @@ class ReplSession:
                         sys.stdout.flush()
                         self.console.print(format_tool_line(tool_name, tool_args))
 
+                        _abort = loop_guard.record_call(tool_name, tool_args)
+                        if _abort:
+                            self.console.print(f"[yellow]! loop guard: {_abort}[/yellow]")
+                            self.ctx.add_tool_result(call_id, f"[loop_guard_abort] {_abort}", is_error=True)
+                            if self.session_store:
+                                self.session_store.append_event(self.session_id, "tool_result", {
+                                    "tool": tool_name, "call_id": call_id,
+                                    "content": _abort, "error": _abort,
+                                    "metadata": {"reason": "loop_guard"},
+                                    "duration_ms": 0,
+                                })
+                            final_answer = (
+                                "I have stopped early to avoid an infinite loop. "
+                                + _abort
+                            )
+                            self.ctx.add_assistant(final_answer)
+                            interrupt = True
+                            break
+
                         if self.session_store:
                             self.session_store.append_event(self.session_id, "tool_call", {
                                 "tool": tool_name, "args": tool_args, "call_id": call_id,
@@ -452,6 +473,7 @@ class ReplSession:
                             })
 
                         is_error = bool(tool_result.error)
+                        _abort = loop_guard.record_result(getattr(tool_result, "error_code", None) if is_error else None)
                         self.ctx.add_tool_result(call_id, result_str, is_error=is_error)
 
                         status_icon = "[red]x[/red]" if is_error else "[green]OK[/green]"
@@ -461,6 +483,16 @@ class ReplSession:
                             self.console.print(f"[red]  {result_str[:200]}[/red]")
                         elif self.verbose:
                             self.console.print(f"[dim]  {result_str[:200]}[/dim]")
+
+                        if _abort:
+                            self.console.print(f"[yellow]! loop guard: {_abort}[/yellow]")
+                            final_answer = (
+                                "I have stopped early to avoid burning tokens on repeated failures. "
+                                + _abort
+                            )
+                            self.ctx.add_assistant(final_answer)
+                            interrupt = True
+                            break
 
                     if interrupt:
                         break
