@@ -91,7 +91,7 @@ HELP_TEXT = """
 | `/cost` | Show token usage and cost |
 | `/status` | Show current configuration |
 | `/diff` | Show file changes made during this session |
-| `/undo` | Revert the last file change |
+| `/undo` | Revert the last file change (add `turn` to revert the whole last turn) |
 """
 
 
@@ -262,9 +262,22 @@ class ReplSession:
             except Exception:
                 self.console.print(d)
 
-    def do_undo(self) -> None:
+    def do_undo(self, mode: str = "") -> None:
         if not self.diff_tracker.changes:
             self.console.print("[dim]Nothing to undo.[/dim]")
+            return
+        mode_norm = (mode or "").strip().lower()
+        if mode_norm in ("turn", "t", "txn", "transaction"):
+            txn = self.diff_tracker.undo_last_transaction()
+            if txn is None:
+                self.console.print("[dim]Nothing to undo.[/dim]")
+                return
+            files = sorted({ch.path for ch in txn.changes})
+            self.console.print(
+                f"[green]Reverted transaction[/green] "
+                f"({len(files)} file{'s' if len(files) != 1 else ''}): "
+                + ", ".join(f"[cyan]{f}[/cyan]" for f in files)
+            )
             return
         path = self.diff_tracker.undo_last()
         if path:
@@ -291,6 +304,16 @@ class ReplSession:
             return None
 
     def run_turn(self, user_message: str) -> bool:
+        """Public entry point.  Wraps the turn in a diff transaction so
+        every file change made during the run can be reverted as one unit
+        via ``/undo turn`` or ``diff_tracker.undo_last_transaction()``."""
+        self.diff_tracker.begin_turn()
+        try:
+            return self._run_turn_inner(user_message)
+        finally:
+            self.diff_tracker.commit_turn()
+
+    def _run_turn_inner(self, user_message: str) -> bool:
         _turn_t0 = time.perf_counter()
         self.ctx.add_user(user_message)
         if self.session_store:
@@ -810,7 +833,7 @@ def run_repl(
             elif cmd == "/diff":
                 repl.do_diff()
             elif cmd == "/undo":
-                repl.do_undo()
+                repl.do_undo(arg)
             elif cmd == "/cost":
                 ct = repl.cost_tracker
                 console.print(f"Tokens: {ct.total_input_tokens}in + {ct.total_output_tokens}out")
