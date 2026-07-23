@@ -7,14 +7,49 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-import litellm
+import os as _os
+
+# Force LiteLLM to use its bundled model-price catalog instead of fetching
+# https://raw.githubusercontent.com/.../model_prices_and_context_window.json
+# on every startup (which can add 5-30s on slow / blocked networks).
+_os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "1")
 
 from repopilot.llm.circuit_breaker import CircuitBreaker, CircuitOpenError
 
-litellm.drop_params = True
-litellm.set_verbose = False
-# Suppress litellm info logs during normal operation
-logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+# Lazy-load litellm: importing it costs ~8-10s (loads openai, httpx, tiktoken,
+# tokenizers, plus its own model catalog).  Deferring keeps `repopilot` REPL
+# startup snappy; the cost is paid on the first LLM call, where the user is
+# already awaiting a network round-trip.
+class _LitellmProxy:
+    """Attribute-access proxy that imports litellm on first use.
+
+    Kept at module level as ``litellm`` so callers keep writing
+    ``litellm.completion(...)`` and unittest.mock.patch keeps working.
+    """
+    __slots__ = ("_mod",)
+
+    def __init__(self):
+        object.__setattr__(self, "_mod", None)
+
+    def _load(self):
+        mod = object.__getattribute__(self, "_mod")
+        if mod is None:
+            import litellm as _l
+            _l.drop_params = True
+            _l.set_verbose = False
+            logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+            object.__setattr__(self, "_mod", _l)
+            mod = _l
+        return mod
+
+    def __getattr__(self, name):
+        return getattr(self._load(), name)
+
+    def __setattr__(self, name, value):
+        setattr(self._load(), name, value)
+
+
+litellm = _LitellmProxy()
 
 _logger = logging.getLogger("repopilot.llm")
 
