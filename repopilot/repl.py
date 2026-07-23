@@ -756,6 +756,21 @@ def run_repl(
     )
     console.print()
 
+    # Eagerly warm up the LLM backend (litellm + openai + tiktoken +
+    # tokenizers) so the *first* user message does not stall for ~9s.
+    # The proxy in llm.service defers this by default; we force-load it
+    # here with a visible spinner so the user knows we are working.
+    try:
+        from repopilot.llm.service import litellm as _proxy
+        if getattr(_proxy, "_mod", None) is None:  # not yet imported
+            with console.status(
+                "[dim]Loading LLM backend (litellm)...[/dim]",
+                spinner="dots",
+            ):
+                _proxy._load()
+    except Exception as _e:  # pragma: no cover - never block startup on this
+        console.print(f"[yellow]LLM warmup skipped: {_e}[/yellow]")
+
     repl = ReplSession(
         repo_path=repo_path, llm=llm, sandbox_type=sandbox_type,
         approval_mode=approval_mode, settings=settings,
