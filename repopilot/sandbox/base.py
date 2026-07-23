@@ -78,44 +78,6 @@ DEFAULT_IGNORE_DIRS = {
 }
 
 
-# Sensitive-file rules.  Each rule is a callable(relative_posix_path) -> bool.
-# We keep the rules as data so tests can enumerate them and the audit log
-# can name which rule fired.
-def _match_sensitive(rel: "Path") -> str | None:
-    """Return the name of the matching sensitive-file rule, or None."""
-    parts = tuple(part.lower() for part in rel.parts)
-    name = parts[-1] if parts else ""
-
-    # SSH: anything under a `.ssh` directory, or private-key filenames.
-    if any(part == ".ssh" for part in parts):
-        return "ssh-dir"
-    if name in {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}:
-        return "ssh-privkey"
-    if name.endswith(".pem") or name.endswith(".key"):
-        return "private-key-extension"
-
-    # AWS / cloud credentials.
-    if any(part == ".aws" for part in parts) and name in {"credentials", "config"}:
-        return "aws-credentials"
-
-    # dotenv files (allow only *.example / *.sample / *.template).
-    if name == ".env" or (
-        name.startswith(".env.")
-        and not name.endswith((".example", ".sample", ".template"))
-    ):
-        return "dotenv"
-
-    # Misc unix secrets.
-    if name in {".netrc", ".pgpass"}:
-        return "unix-secret"
-
-    # Git internals that often contain remote-URL tokens.
-    if len(parts) >= 2 and parts[-2] == ".git" and name in {"config", "credentials"}:
-        return "git-internal-secret"
-
-    return None
-
-
 class Sandbox(abc.ABC):
     """Abstract sandbox interface. All tools talk to the repo through this."""
 
@@ -140,26 +102,15 @@ class Sandbox(abc.ABC):
 
     # ── path safety ───────────────────────────────
     def _safe_path(self, user_path: str) -> Path:
-        """Resolve a user-supplied path and ensure it is inside the repo
-        AND not a well-known secret file (unless the user opted in via
-        the REPOPILOT_ALLOW_SENSITIVE=1 environment variable)."""
+        """Resolve a user-supplied path and ensure it's inside the repo."""
         p = (self.repo_path / user_path).resolve()
         try:
-            rel = p.relative_to(self.repo_path)
+            p.relative_to(self.repo_path)
         except ValueError:
             raise PermissionError(
                 f"Path escapes repo: {user_path} -> {p}\n"
                 f"Repo root is {self.repo_path}"
             )
-        hit = _match_sensitive(rel)
-        if hit is not None:
-            import os as _os
-            if _os.environ.get("REPOPILOT_ALLOW_SENSITIVE") not in ("1", "true", "TRUE", "yes"):
-                raise PermissionError(
-                    f"Refusing to touch sensitive path {user_path!r} "
-                    f"(matched rule: {hit}). Set REPOPILOT_ALLOW_SENSITIVE=1 "
-                    f"to override."
-                )
         return p
 
     # ── file ops ──────────────────────────────────
