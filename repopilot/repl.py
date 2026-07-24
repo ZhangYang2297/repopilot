@@ -809,10 +809,12 @@ def run_repl(
                 break
             elif cmd == "/help":
                 console.print(Markdown(HELP_TEXT))
+                continue
             elif cmd == "/model":
                 if arg:
                     if "/" not in arg:
                         console.print("[red]Model must be provider/model format (e.g. openai/gpt-4o)[/red]")
+                        continue
                     else:
                         settings.model = arg
                         settings.fast_model = arg
@@ -821,21 +823,26 @@ def run_repl(
                         settings = get_settings()
                         repl.llm = build_llm_from_settings(settings)
                         console.print(f"[green]Model -> {arg}[/green]")
+                        continue
                 else:
                     console.print(f"Model: [cyan]{settings.model}[/cyan]")
+                    continue
             elif cmd == "/approval":
                 valid = ("auto", "confirm", "edit-only", "deny")
                 if arg in valid:
                     repl.approval_mode = arg
                     repl.registry._permission.mode = arg
                     console.print(f"[green]Approval -> {arg}[/green]")
+                    continue
                 else:
                     console.print(f"Approval: [cyan]{repl.approval_mode}[/cyan]  (valid: {', '.join(valid)})")
+                    continue
             elif cmd == "/compact":
                 repl.do_compact()
             elif cmd == "/clear":
                 repl.do_clear()
                 console.print("[green]Fresh conversation started.[/green]")
+                continue
             elif cmd == "/cd":
                 if arg:
                     p = Path(arg).expanduser().resolve()
@@ -844,6 +851,7 @@ def run_repl(
                         repl.repo_path = p
                         repl.diff_tracker = DiffTracker(str(p))
                         console.print(f"[green]cd -> {p}[/green]")
+                        continue
                         if session_store:
                             # Update session cwd, keep conversation history
                             session = session_store.get(repl.session_id)
@@ -851,8 +859,10 @@ def run_repl(
                                 session_store.append_event(repl.session_id, "system", {"cd": str(p), "from": str(old_path)})
                     else:
                         console.print(f"[red]Not a directory: {p}[/red]")
+                        continue
                 else:
                     console.print(f"cwd: [cyan]{repl.repo_path}[/cyan]")
+                    continue
             elif cmd == "/diff":
                 repl.do_diff()
             elif cmd == "/undo":
@@ -860,13 +870,20 @@ def run_repl(
             elif cmd == "/cost":
                 ct = repl.cost_tracker
                 console.print(ct.format_summary())
+                continue
             elif cmd == "/status":
                 console.print(f"  Directory: [cyan]{repl.repo_path}[/cyan]")
+                continue
                 console.print(f"  Model:     [cyan]{settings.model}[/cyan]")
+                continue
                 console.print(f"  Sandbox:   [cyan]{repl.sandbox_type}[/cyan]")
+                continue
                 console.print(f"  Approval:  [cyan]{repl.approval_mode}[/cyan]")
+                continue
                 console.print(f"  Steps:     [cyan]{repl.steps}[/cyan]")
+                continue
                 console.print(f"  Tokens:    [cyan]{repl.total_tokens}[/cyan]")
+                continue
             elif cmd == "/memory":
                 global_mem = settings.home_dir / "REPOPILOT.md"
                 project_mem = repl.repo_path / "REPOPILOT.md"
@@ -875,18 +892,23 @@ def run_repl(
                         note = arg[len("--global "):].strip()
                         append_to_global_memory(settings.home_dir, note)
                         console.print("[green]Appended to global memory.[/green]")
+                        continue
                     else:
                         append_to_project_memory(repl.repo_path, arg.strip())
                         console.print("[green]Appended to project memory.[/green]")
+                        continue
                     repl._build_context()
                     session = session_store.create(title=f"REPL: {repo_path.name}", cwd=str(repo_path), model=settings.model)
                     repl.session_id = session.id
                 else:
                     console.print("[bold]Memory files:[/bold]")
+                    continue
                     if global_mem.exists():
                         console.print("  Global (~/.repopilot/REPOPILOT.md): [green]exists[/green]")
+                        continue
                         gm = global_mem.read_text(encoding="utf-8")
                         console.print(Markdown(gm[:1000] + ("..." if len(gm) > 1000 else "")))
+                        continue
                     else:
                         console.print("  Global: [dim]not created yet[/dim]")
                     if project_mem.exists():
@@ -899,27 +921,34 @@ def run_repl(
                 recent = session_store.list(limit=10)
                 if not recent:
                     console.print("[dim]No previous sessions.[/dim]")
+                    continue
                 else:
                     console.print("[bold]Recent sessions:[/bold]")
+                    continue
                     for s in recent[:10]:
                         cwd = getattr(s, "cwd", "?") or "?"
                         title = getattr(s, "title", "untitled") or "untitled"
                         sid = (getattr(s, "id", "?") or "?")[:8]
                         console.print(f"  [{sid}] {title} - {cwd}")
+                        continue
                     console.print("[dim]Use /resume <id> to resume[/dim]")
+                    continue
             elif cmd == "/resume":
                 if not arg:
                     recent = session_store.list(limit=5)
                     if recent:
                         arg = recent[0].id
                         console.print(f"[dim]Resuming most recent session: {arg[:8]}[/dim]")
+                        continue
                     else:
                         console.print("[red]No previous session to resume.[/red]")
+                        continue
                         continue
                 try:
                     events = session_store.read_events(arg)
                     if not events:
                         console.print(f"[red]Session {arg[:8]} not found or empty.[/red]")
+                        continue
                         continue
                     repl.do_clear()
                     for ev in events:
