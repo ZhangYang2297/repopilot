@@ -956,8 +956,9 @@ def run_repl(
                 except Exception as e:
                     console.print(f"[red]Failed to resume session: {e}[/red]")
             else:
-                console.print(f"[red]Unknown command: {cmd}[/red]. Type /help.")
-            continue
+                # Unknown slash command → treat whole line as user question (Claude Code / codex behavior)
+                # fall through to repl.run_turn below
+                pass
 
         try:
             repl.run_turn(user_input)
