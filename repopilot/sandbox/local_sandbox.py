@@ -150,14 +150,21 @@ class LocalSandbox(Sandbox):
 
     # ── exec ──────────────────────────────────────
     def exec(self, command: str, timeout: int = 30, cwd: Optional[str] = None) -> ExecResult:
-        """Run ``command`` in a child process, cancellable via Ctrl-C.
+        """Run ``command`` in a child process.
 
-        The child is launched in its own process group / session so that a
-        KeyboardInterrupt to the Python REPL can be propagated to *all*
-        descendants (e.g. ``bash -c "sleep 60 & wait"``).  On timeout or
-        interrupt we send a graceful terminate first, then hard-kill after
-        a 2-second grace window.
+        Robustness features:
+          * cancellable via Ctrl-C (own process group / session);
+          * hard timeout (with 2s SIGTERM → SIGKILL grace);
+          * **output cap**: stdout/stderr are drained in threads and
+            capped at ``MAX_OUTPUT_BYTES`` combined; on cap the child
+            is killed and ``output_capped=True`` is returned;
+          * best-effort memory limit on POSIX via RLIMIT_AS.
         """
+        import threading
+
+        MAX_OUTPUT_BYTES = 8 * 1024 * 1024   # 8 MiB stdout+stderr combined
+        MEM_LIMIT_BYTES = 512 * 1024 * 1024  # 512 MiB (POSIX only)
+
         workdir = str(self.repo_path)
         if cwd:
             workdir = str(self._safe_path(cwd))
@@ -171,11 +178,25 @@ class LocalSandbox(Sandbox):
             text=True,
             encoding="utf-8",
             errors="replace",
+            bufsize=1,
         )
         if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             popen_kwargs["start_new_session"] = True
+            try:
+                import resource  # POSIX only
+                def _preexec():
+                    try:
+                        resource.setrlimit(
+                            resource.RLIMIT_AS,
+                            (MEM_LIMIT_BYTES, MEM_LIMIT_BYTES),
+                        )
+                    except (ValueError, OSError):
+                        pass
+                popen_kwargs["preexec_fn"] = _preexec
+            except ImportError:
+                pass
 
         try:
             proc = subprocess.Popen(command, **popen_kwargs)
@@ -186,39 +207,89 @@ class LocalSandbox(Sandbox):
                 duration_ms=int((time.time() - t0) * 1000),
             )
 
+        # Drain stdout/stderr in threads so we can enforce a byte cap
+        # without letting the child fill unbounded pipe buffers.
+        out_chunks: list[str] = []
+        err_chunks: list[str] = []
+        counters = {"bytes": 0, "capped": False}
+        lock = threading.Lock()
+
+        def _drain(stream, chunks):
+            try:
+                while True:
+                    chunk = stream.read(4096)
+                    if not chunk:
+                        break
+                    with lock:
+                        room = MAX_OUTPUT_BYTES - counters["bytes"]
+                        if room <= 0:
+                            counters["capped"] = True
+                            break
+                        if len(chunk) > room:
+                            chunks.append(chunk[:room])
+                            counters["bytes"] += room
+                            counters["capped"] = True
+                            break
+                        chunks.append(chunk)
+                        counters["bytes"] += len(chunk)
+            except Exception:
+                pass
+
+        t_out = threading.Thread(target=_drain, args=(proc.stdout, out_chunks), daemon=True)
+        t_err = threading.Thread(target=_drain, args=(proc.stderr, err_chunks), daemon=True)
+        t_out.start()
+        t_err.start()
+
         timed_out = False
         interrupted = False
-        stdout = ""
-        stderr = ""
-        exit_code = 0
+        output_capped = False
+        deadline = t0 + max(1, timeout)
+
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-            exit_code = proc.returncode
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            _terminate_tree(proc)
-            try:
-                stdout, stderr = proc.communicate(timeout=2)
-            except Exception:
-                stdout, stderr = (stdout or ""), (stderr or "")
-            exit_code = proc.returncode if proc.returncode is not None else -1
+            while True:
+                if proc.poll() is not None:
+                    break
+                with lock:
+                    if counters["capped"]:
+                        output_capped = True
+                        break
+                if time.time() > deadline:
+                    timed_out = True
+                    break
+                time.sleep(0.05)
         except KeyboardInterrupt:
             interrupted = True
+
+        if proc.poll() is None:
             _terminate_tree(proc)
             try:
-                stdout, stderr = proc.communicate(timeout=2)
-            except Exception:
-                stdout, stderr = (stdout or ""), (stderr or "")
-            exit_code = proc.returncode if proc.returncode is not None else -2
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+        # Let drainers flush what''s already buffered.
+        t_out.join(timeout=1)
+        t_err.join(timeout=1)
+
+        stdout = "".join(out_chunks)
+        stderr = "".join(err_chunks)
+        exit_code = proc.returncode if proc.returncode is not None else (-1 if timed_out else -2)
+
+        if output_capped:
+            stderr = (stderr + f"\n[output truncated at {MAX_OUTPUT_BYTES} bytes]").lstrip("\n")
 
         return ExecResult(
             command=command,
-            stdout=stdout or "",
-            stderr=stderr or "",
+            stdout=stdout,
+            stderr=stderr,
             exit_code=exit_code,
             timed_out=timed_out,
             interrupted=interrupted,
             duration_ms=int((time.time() - t0) * 1000),
+            output_capped=output_capped,
         )
 
     # ── navigation ────────────────────────────────

@@ -17,6 +17,7 @@ class ExecResult:
     timed_out: bool = False
     interrupted: bool = False
     duration_ms: int = 0
+    output_capped: bool = False
 
     @property
     def ok(self) -> bool:

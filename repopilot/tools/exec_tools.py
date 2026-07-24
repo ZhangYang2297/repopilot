@@ -87,7 +87,10 @@ class BashTool(Tool):
             "timed_out": result.timed_out,
             "duration_ms": result.duration_ms,
             "stdout_bytes": len(result.stdout or ""),
+            "output_capped": bool(getattr(result, "output_capped", False)),
         }
+        if meta["output_capped"]:
+            output += "\n[output truncated: hit 8 MiB stdout+stderr cap; process killed]"
         if getattr(result, "interrupted", False):
             output += "\n[command interrupted by user (Ctrl-C)]"
             return ToolResult(content=output, error="Interrupted by user",
@@ -222,7 +225,10 @@ class RunPythonTool(Tool):
             "timed_out": result.timed_out,
             "duration_ms": result.duration_ms,
             "stdout_bytes": len(result.stdout or ""),
+            "output_capped": bool(getattr(result, "output_capped", False)),
         }
+        if meta["output_capped"]:
+            output += "\n[output truncated: hit 8 MiB stdout+stderr cap; process killed]"
         if getattr(result, "interrupted", False):
             output += "\n[script interrupted by user (Ctrl-C)]"
             return ToolResult(content=output, error="Interrupted by user",
